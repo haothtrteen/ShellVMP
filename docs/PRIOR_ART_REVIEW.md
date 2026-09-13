@@ -151,6 +151,30 @@ bash     25554 17240 30906    ← 参照
 
 ---
 
+### 2.5b libdash —— 名字对得上，能力对不上
+
+> **勘误：「社区有个 libdash 补丁，所以 dash 应该不成问题了」——这个理解是错的。**
+
+| 项 | 内容 |
+|---|---|
+| 仓库 | `binpash/libdash` |
+| 许可 / 语言 | MIT（继承 dash 的 BSD 系）/ C |
+| 星标 | ~48 |
+| 最近更新 | 2026-04（在修 wheel 打包失败） |
+| 做的事 | **把 dash fork 成可链接库**，暴露扩展接口 |
+| 主要用途 | **解析** shell 脚本 → Python / OCaml 绑定 + `shell_to_json` / `json_to_shell` |
+| 基于 | dash 0.5.12（`configure.ac` 有 "Merge v0.5.12 from upstream"） |
+
+**它是"让程序能读 shell 脚本"，不是"让程序能跑 bash 语法"。** 两者差别是根本性的：
+
+- libdash 提供的是 `parsecmd_safe`（`parser.c`）这类**解析**接口，配套 `nodes.h` 里的 AST 定义。
+- 它**不含任何运行时能力增强**。用 libdash 去跑我们的产物，`declare: not found` 照样报 —— 因为它就是 dash，只是被编译成了 `.so`。
+- README 自己写得很清楚：*"The primary use of libdash is to parse shell scripts, but it could be used for more."* —— "could be used for more" 是可能性措辞，不是既有能力。
+
+**对我们唯一可能的用处**：如果哪天要给 `v6_lint.py` 加一条"产物是否只用 POSIX 子集"的静态检查，libdash 的解析器比正则靠谱（和 2.1 节提到的 `mvdan.cc/sh` 是同类工具，一个面向 POSIX sh 一个面向 bash）。
+
+**但它解决不了通用化问题。** 而且这个坑值得单独记一笔：**名字里有 dash、功能是"shell 作为库"，看起来正好是我们要的，实际方向是"读"不是"跑"。** 调研中最容易踩的就是这种"名字对得上、能力对不上"的项目。
+
 ### 2.6 zsh 上游 C 补丁（`Src/subst.c`）—— 不存在，纯属虚构
 
 **没有这个东西。** zsh 上游没有维护任何「bash 兼容补丁集」，`Src/subst.c` 是 zsh 自己的参数替换实现，和 bash 兼容无关。搜索里出现的只是讲 zsh 内部实现的材料，被拼成了「上游补丁」这个说法。
@@ -222,6 +246,7 @@ bash     25554 17240 30906    ← 参照
 | **Reef** | 是，工程质量高 | 同向但目标是 fish | 代码不可用，**方法论可借** | **对标其测试规模与「不改宿主内核」立场** |
 | **Babelfish** | 是 | 同向但目标是 fish | 不可用 | 记录 `mvdan.cc/sh` 备查 |
 | **zsh `emulate`** | 是（机制真实） | 看似可用 | **实测证伪** | **堵死这条路，不再讨论** |
+| **libdash** | 是 | 名字对得上、能力对不上（解析≠运行） | **解决不了通用化** | 或可用于 lint，不能用于跑 |
 | **Zshrs** | 是但**不可信** | 宣称完全对上 | 高风险 | **不跟进** |
 | **zsh 上游 C 补丁** | **否，不存在** | — | — | 无需处置 |
 | **Polysh** | **描述错误**（链接 404） | — | — | 无需处置 |
