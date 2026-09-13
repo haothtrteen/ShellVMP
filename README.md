@@ -245,10 +245,14 @@ ShellVMP/
 - **V7-ISA 绑定 bash 5.2**（解释器魔改层的插桩点依赖具体源码结构）。bash 主版本升级时需要重新校准插桩点——这层是"可移植性最弱、但价值最高"的部分。
 - **VMP 保护收益有限**：本架构最终把脚本交给 `eval`，VMP 只能保护"壳"。详见 [`docs/VMP_NOTES.md`](docs/VMP_NOTES.md)。
 - **真机产物**未随仓库分发（体积 + 隐私）。
-- **产物运行期锁定 bash**（非语法限制，是密钥链把解释器语义烧进了密文）。跨 shell 的完整分析、功能剥离表与三档路线见 [`docs/GENERALIZATION_FEASIBILITY.md`](docs/GENERALIZATION_FEASIBILITY.md)。**注**：目标机无需装 bash —— `V7_SELF=1` 内嵌静态解释器即可跨平台运行。
-- **解释器兼容层（实验性）**：`tools/interp_compat/` 提供了给 dash 装 bash 兼容 `$RANDOM` 的补丁，实测与 bash 逐比特一致。但**仅靠它跑不通产物**（仍受语法层限制），详见 [`docs/INTERP_COMPAT_LAYER.md`](docs/INTERP_COMPAT_LAYER.md)。
+- **产物运行期不再锁定 bash（mksh 已完成）**。历史认知"跨 shell 做不到"的前提是**密钥链把解释器语义烧进了密文**。实测证明：把产物里所有非 POSIX 构造**无条件改写成 POSIX 等价物**就能同时覆盖 bash 与 mksh —— **产物在 mksh 下与 bash 输出逐字节一致**（8 轮独立生成 8/8 通过）。
+  - **为什么是 mksh**：Android 4.0+ 的 `/system/bin/sh` 就是 **mksh**（不是 dash）。这才是真靶子。
+  - **验收门禁**：`sh tools/sh_compat_check.sh <产物.sh> [原始脚本.sh]`
+  - 改动清单与"计划外四大真凶"（`$RANDOM` / `$-` / `$_` / `read -a`）见 [`docs/SHELL_TARGETS.md`](docs/SHELL_TARGETS.md) 第九节。
+- **dash 仍未支持（P2）**：dash **完全没有数组**（`_mx=; _mx[0]="abc"` → `Bad substitution`），mksh 用的 `declare -a X` → `X=` 这一招对 dash 不够，需要额外的标量模拟层。
+- **zsh 明确不做**：zsh 是交互 shell 不是脚本 shell（62% 交互份额，但 CI/CD 里 ≈0）。决策与重启条件见 [`docs/BACKLOG.md`](docs/BACKLOG.md)。
+- **解释器兼容层（已被取代，保留作历史）**：`tools/interp_compat/` 原方案是给 dash 打 C 补丁装 bash 兼容 `$RANDOM`。现已被**纯算术内联 PRNG**（`_rn()`，三 shell 逐位一致、零依赖）取代 —— 无需改任何 shell 源码。详见 [`docs/INTERP_COMPAT_LAYER.md`](docs/INTERP_COMPAT_LAYER.md) 顶部的状态更新。
 - **跨 shell 的外部方案已核查完毕**：社区同类工具（Babelfish / Reef / Rosetta-shell / Zshrs / zsh `emulate` / `libdash` 等）**均无法直接复用**，其中五条常见思路已被实测或事实排除。详见 [`docs/PRIOR_ART_REVIEW.md`](docs/PRIOR_ART_REVIEW.md)。
-- **第 2 层（产物语法）实测下修**：原估「数组下标访问遍布解释器」**不成立** —— 实测 dash 原生支持 `${a[0]}` 位置参数下标，产物只需改 **4 处 `declare -a` 声明**。详见 [`docs/DASH_SYNTAX_AUDIT.md`](docs/DASH_SYNTAX_AUDIT.md)。
 
 ---
 

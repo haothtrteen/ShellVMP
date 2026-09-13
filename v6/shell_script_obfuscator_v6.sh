@@ -363,7 +363,7 @@ simulate_execution() {
         for ((i = 0; i < ${#REAL_BLOCKS[@]}; i++)); do
             printf 'true "%s"\n' "${VM_BEACONS[$i]:-__rr__}"
             printf '%s\n' "${REAL_BLOCKS[$i]}"
-            printf '%s=$_ %s=$?\n' "$vrt" "$vrc"
+            printf '%s=$? %s="%s"\n' "$vrc" "$vrt" "${VM_BEACONS[$i]:-__rr__}"
             printf 'printf %%s "$%s" > "%s/%d.rt"\n' "$vrt" "$sim_dir" "$i"
             printf 'printf %%s "$%s" > "%s/%d.rc"\n' "$vrc" "$sim_dir" "$i"
         done
@@ -650,7 +650,7 @@ gen_decoy_wrapped() {
     # 清空 $_ 造成"结构差异 + 语义差异"双重指纹；旧版 printf 8 个 %s 配 7 个
     # 实参 → 末尾多一空行，逐块 diff 可识破诱饵，已修复）
     printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
-        "$det" "true \"$beacon\"" "$fake" "${rt_name}=\$_ ${rc_name}=\$?" "$s_code" "$ck_code"
+        "$det" "true \"$beacon\"" "$fake" "${rc_name}=\$? ${rt_name}=\"$beacon\"" "$s_code" "$ck_code"
 }
 
 #==============================================================================
@@ -852,7 +852,7 @@ VAR_NAME_REGISTRY="$WORK_DIR/.var_registry"
 
 # ── 命名空间前缀（V6_NS，可选） ──────────────────────────────────────
 # 把作者的标识"风格化"进随机变量名，同时【不破坏 per-build 随机化】：
-#     产物里是  <NS>_<6位随机>   （如 yourname_k9x2）
+#     产物里是  <NS>_<6位随机>   （如 haothtrteen_k9x2）
 # 即"看得出是谁的产物"，但每次构建后缀都不同 —— 攻击者无法写固定规则
 # 定位密钥链（这正是随机化的全部价值，固定死等于把移动靶变固定靶）。
 #
@@ -1086,14 +1086,42 @@ _e() {
     _tg=${_dg##* }
     printf '%s:%s' "$_ct" "${_tg:0:16}"
 }
+# sh_compat: portable equivalent of bash 5.1+ $RANDOM, used by _am() only.
+# Park-Miller minimal standard generator with the Schrage method to avoid
+# overflow, then the bash bit fold (rseed>>16)^(rseed&65535) & 32767, plus
+# the (rv==last) retry. _rn reads the _rr/_rl globals and prints its result
+# so that $( ) capture matches the "reference is a draw" semantics of the
+# $RANDOM it replaces. Pure arithmetic => identical in bash/mksh/dash.
+_rn() {
+    while :; do
+        [ "$_rr" -eq 0 ] && _rr=123459876
+        _rh=$(( _rr / 127773 ))
+        _rlo=$(( _rr - 127773 * _rh ))
+        _rt=$(( 16807 * _rlo - 2836 * _rh ))
+        [ "$_rt" -lt 0 ] && _rt=$(( _rt + 2147483647 ))
+        _rr=$_rt
+        _rt=$(( (_rr >> 16) ^ (_rr & 65535) ))
+        _rt=$(( _rt & 32767 ))
+        [ "$_rt" -ne "$_rl" ] && break
+    done
+    _rl=$_rt
+    printf '%s' "$_rt"
+}
 _am() {
     _rs=$(( (_rs * 1103515245 + 12345) & 0x7fffffff ))
-    RANDOM=$_rs
-    _ra=$RANDOM
-    _rb=$RANDOM
+    # sh_compat: the original `RANDOM=$_rs; _ra=$RANDOM; _rb=$RANDOM`
+    # used the host $RANDOM generator. mksh ships a different algorithm
+    # and dash has no $RANDOM at all, so the runtime key chain diverged
+    # from the compile-time simulation (bash 5.1+ lib/sh/random.c, see
+    # sim_advance_mk) -> HMAC check failed -> silent `exit 1`.
+    # _rn() reproduces bash bit-for-bit with pure arithmetic.
+    _rr=$(( _rs & 0xFFFFFFFF ))
+    _rl=0
+    _ra=$(_rn)
+    _rb=$(_rn)
     _pm=1
     [ $(( _p % 4 )) -eq 1 ] && {
-        [ "$(builtin type -t eval)" != builtin ] && _pm=0
+        case "$(command -V eval 2>/dev/null)" in *builtin*) ;; *) _pm=0 ;; esac
         case $- in *x*) _pm=0 ;; esac
         [ -n "${BASH_XTRACEFD:-}" ] && _pm=0
         [ "${PS4:-+ }" != "+ " ] && _pm=0
@@ -1113,9 +1141,21 @@ _n=${#_c[@]}
 while [ "$_p" -lt "$_n" ]; do
     { _b=$(_f "${_c[$_p]}" "$_mk" "$_p"); } 2>/dev/null
     [ -n "$_b" ] || exit 1
-    IFS=$'\x01' read -r -a _ial <<< "$_b"
-    for _ii in "${_ial[@]}"; do
-        _inst="$_ii"
+    # sh_compat: 原来用 `IFS=$\x27\x01\x27 read -r -a _ial <<< "$_b"`。
+    # read -a 与 <<< 都是 bash/ksh 扩展：mksh 的 read -a 按字符码建数组
+    # （实测 "abc" 得 97/98/99），dash 直接语法报错。改为 POSIX 的
+    # IFS 分列 + set --，三 shell 行为一致；_nial 记录条目数。
+    _oifs=$IFS
+    IFS=$(printf '\001')
+    set -f
+    set -- $_b
+    set +f
+    IFS=$_oifs
+    _nial=$#
+    _ial=$*
+    _iai=1
+    while [ "$_iai" -le "$_nial" ]; do
+        eval "_inst=\${$_iai}"
         case "$_inst" in
             EXEC:*)
                 _t="${_inst#EXEC:}"
@@ -1128,7 +1168,7 @@ while [ "$_p" -lt "$_n" ]; do
                 case "$_pp" in
                     0) builtin eval "$_code" ;;
                     1) builtin source /dev/fd/9 9<<< "$_code" ;;
-                    *) builtin source <(printf '%s' "$_code") ;;
+                    *) _tf=$(mktemp 2>/dev/null) || _tf=/tmp/.sv$$; printf '%s' "$_code" > "$_tf"; . "$_tf"; rm -f "$_tf"; unset _tf ;;
                 esac
                 unset _code
                 ;;
@@ -1157,7 +1197,7 @@ while [ "$_p" -lt "$_n" ]; do
                     case "$_pp" in
                         0) builtin eval "$_code" ;;
                         1) builtin source /dev/fd/9 9<<< "$_code" ;;
-                        *) builtin source <(printf '%s' "$_code") ;;
+                        *) _tf=$(mktemp 2>/dev/null) || _tf=/tmp/.sv$$; printf '%s' "$_code" > "$_tf"; . "$_tf"; rm -f "$_tf"; unset _tf ;;
                     esac
                     unset _code
                 fi
@@ -1169,6 +1209,7 @@ while [ "$_p" -lt "$_n" ]; do
                 ;;
         esac
         unset _inst
+        _iai=$((_iai + 1))
     done
     _am
     _c[$_p]=$(_e "$_b" "$_mk" "$_p")
@@ -1176,7 +1217,7 @@ while [ "$_p" -lt "$_n" ]; do
     # 会被用户脚本的 set -e 误杀（首块即 set -e 时必死，rc=1 无输出）
     _p=$((_p + 1))
 done
-unset _mk _ck _p _n _s _di _rt _sa _sb _sc _sd _zz _zy _zv _rs _ra _rb _pm _nw _t0 _ok _pt _pp _t _md _b _ial _ii _inst 2>/dev/null
+unset _mk _ck _p _n _s _di _rt _sa _sb _sc _sd _zz _zy _zv _rs _ra _rb _pm _nw _t0 _ok _pt _pp _t _md _b _inst _rn _rr _rl _rh _rlo _oifs _nial _iai 2>/dev/null
 I_EOF
 )
     else
@@ -1204,14 +1245,42 @@ _e() {
     _tg=${_dg##* }
     printf '%s:%s' "$_ct" "${_tg:0:16}"
 }
+# sh_compat: portable equivalent of bash 5.1+ $RANDOM, used by _am() only.
+# Park-Miller minimal standard generator with the Schrage method to avoid
+# overflow, then the bash bit fold (rseed>>16)^(rseed&65535) & 32767, plus
+# the (rv==last) retry. _rn reads the _rr/_rl globals and prints its result
+# so that $( ) capture matches the "reference is a draw" semantics of the
+# $RANDOM it replaces. Pure arithmetic => identical in bash/mksh/dash.
+_rn() {
+    while :; do
+        [ "$_rr" -eq 0 ] && _rr=123459876
+        _rh=$(( _rr / 127773 ))
+        _rlo=$(( _rr - 127773 * _rh ))
+        _rt=$(( 16807 * _rlo - 2836 * _rh ))
+        [ "$_rt" -lt 0 ] && _rt=$(( _rt + 2147483647 ))
+        _rr=$_rt
+        _rt=$(( (_rr >> 16) ^ (_rr & 65535) ))
+        _rt=$(( _rt & 32767 ))
+        [ "$_rt" -ne "$_rl" ] && break
+    done
+    _rl=$_rt
+    printf '%s' "$_rt"
+}
 _am() {
     _rs=$(( (_rs * 1103515245 + 12345) & 0x7fffffff ))
-    RANDOM=$_rs
-    _ra=$RANDOM
-    _rb=$RANDOM
+    # sh_compat: the original `RANDOM=$_rs; _ra=$RANDOM; _rb=$RANDOM`
+    # used the host $RANDOM generator. mksh ships a different algorithm
+    # and dash has no $RANDOM at all, so the runtime key chain diverged
+    # from the compile-time simulation (bash 5.1+ lib/sh/random.c, see
+    # sim_advance_mk) -> HMAC check failed -> silent `exit 1`.
+    # _rn() reproduces bash bit-for-bit with pure arithmetic.
+    _rr=$(( _rs & 0xFFFFFFFF ))
+    _rl=0
+    _ra=$(_rn)
+    _rb=$(_rn)
     _pm=1
     [ $(( _p % 4 )) -eq 1 ] && {
-        [ "$(builtin type -t eval)" != builtin ] && _pm=0
+        case "$(command -V eval 2>/dev/null)" in *builtin*) ;; *) _pm=0 ;; esac
         case $- in *x*) _pm=0 ;; esac
         [ -n "${BASH_XTRACEFD:-}" ] && _pm=0
         [ "${PS4:-+ }" != "+ " ] && _pm=0
@@ -1231,9 +1300,21 @@ _n=${#_c[@]}
 while [ "$_p" -lt "$_n" ]; do
     { _b=$(_f "${_c[$_p]}" "$_mk" "$_p"); } 2>/dev/null
     [ -n "$_b" ] || exit 1
-    IFS=$'\x01' read -r -a _ial <<< "$_b"
-    for _ii in "${_ial[@]}"; do
-        _inst="$_ii"
+    # sh_compat: 原来用 `IFS=$\x27\x01\x27 read -r -a _ial <<< "$_b"`。
+    # read -a 与 <<< 都是 bash/ksh 扩展：mksh 的 read -a 按字符码建数组
+    # （实测 "abc" 得 97/98/99），dash 直接语法报错。改为 POSIX 的
+    # IFS 分列 + set --，三 shell 行为一致；_nial 记录条目数。
+    _oifs=$IFS
+    IFS=$(printf '\001')
+    set -f
+    set -- $_b
+    set +f
+    IFS=$_oifs
+    _nial=$#
+    _ial=$*
+    _iai=1
+    while [ "$_iai" -le "$_nial" ]; do
+        eval "_inst=\${$_iai}"
         if [ "${_inst#EXEC:}" != "$_inst" ]; then
             _t="${_inst#EXEC:}"
             _md="${_t##*:}"
@@ -1245,7 +1326,7 @@ while [ "$_p" -lt "$_n" ]; do
             case "$_pp" in
                 0) builtin eval "$_code" ;;
                 1) builtin source /dev/fd/9 9<<< "$_code" ;;
-                *) builtin source <(printf '%s' "$_code") ;;
+                *) _tf=$(mktemp 2>/dev/null) || _tf=/tmp/.sv$$; printf '%s' "$_code" > "$_tf"; . "$_tf"; rm -f "$_tf"; unset _tf ;;
             esac
             unset _code
         elif [ "${_inst#CEXEC:}" != "$_inst" ]; then
@@ -1273,7 +1354,7 @@ while [ "$_p" -lt "$_n" ]; do
                 case "$_pp" in
                     0) builtin eval "$_code" ;;
                     1) builtin source /dev/fd/9 9<<< "$_code" ;;
-                    *) builtin source <(printf '%s' "$_code") ;;
+                    *) _tf=$(mktemp 2>/dev/null) || _tf=/tmp/.sv$$; printf '%s' "$_code" > "$_tf"; . "$_tf"; rm -f "$_tf"; unset _tf ;;
                 esac
                 unset _code
             fi
@@ -1281,12 +1362,13 @@ while [ "$_p" -lt "$_n" ]; do
             break 2
         fi
         unset _inst
+        _iai=$((_iai + 1))
     done
     _am
     _c[$_p]=$(_e "$_b" "$_mk" "$_p")
     _p=$((_p + 1))
 done
-unset _mk _ck _p _n _s _di _rt _sa _sb _sc _sd _zz _zy _zv _rs _ra _rb _pm _nw _t0 _ok _pt _pp _t _md _b _ial _ii _inst 2>/dev/null
+unset _mk _ck _p _n _s _di _rt _sa _sb _sc _sd _zz _zy _zv _rs _ra _rb _pm _nw _t0 _ok _pt _pp _t _md _b _inst _rn _rr _rl _rh _rlo _oifs _nial _iai 2>/dev/null
 I2_EOF
 )
     fi
@@ -1872,8 +1954,14 @@ compile_v5() {
     # 数据层 AES 盐（骨架契约变量 _sl；编译期 aes_enc_item 与运行期 _f/_e 共用）
     VM_AES_SALT="$(gen_rand 48)"
     # 运行期 $- 恒为 hB（#!/usr/bin/env bash 非交互执行）；目标 bash 主版本默认取本机
-    TARGET_BASH_MAJOR="${TARGET_BASH_MAJOR:-${BASH_VERSINFO[0]}}"
-    key=$(printf '%s%s%s%s%s%d%d' "$key_seed" "$VM_PLATFORM_FP" "$VM_DEVICE_ID" "$VM_INTERP_HASH" "hB" "$TARGET_BASH_MAJOR" 6 | "$SHA512_BIN" | cut -c1-16)
+    # sh_compat：运行时已改为读「允许版本集合」（见 BS_TAIL 模板），
+    # 编译期必须用同一集合的同一取值，否则 mksh/dash 下密钥失配。
+    # 集合首项 = TARGET_BASH_MAJOR，长度 = 元素个数（原式硬编码 6）。
+    TARGET_BASH_VERSIONS="${TARGET_BASH_VERSIONS:-${TARGET_BASH_MAJOR:-${BASH_VERSINFO[0]}} 4 3 2 1}"
+    # shellcheck disable=SC2086
+    set -- $TARGET_BASH_VERSIONS
+    # 运行期已用可移植常量 _iv（非交互 = "n"）替换 $-；编译期用同一值。
+    key=$(printf '%s%s%s%s%s%d%d' "$key_seed" "$VM_PLATFORM_FP" "$VM_DEVICE_ID" "$VM_INTERP_HASH" "n" "$1" "$#" | "$SHA512_BIN" | cut -c1-16)
 
     # 功能1：$RANDOM 状态机初始种子（解释器 _am 每条指令前用它重播种）
     VM_RS=$(( (RANDOM * 32768 + RANDOM) & 0x7fffffff ))
@@ -1888,11 +1976,14 @@ compile_v5() {
     local os_det="[ -x \"\$${N_S5}\" ] || exit 1; [ -x \"\$${N_S2}\" ] || exit 1"
     [ "$CRYPTO_MODE" != "builtin" ] && os_det="[ -x \"\$${N_OS}\" ] || exit 1; ${os_det}"
     local -a DETS=(
-        '[[ $- == *x* ]] && exit 1; [ -n "${LD_PRELOAD:-}" ] && exit 1; [ -z "$(declare -f eval 2>/dev/null)" ] || exit 1'
+        # sh_compat: [[ ]] 与 declare -f 均为 bash 扩展。
+        #   [[ $- == *x* ]]  → case $- in *x*) （POSIX 的 pattern 匹配）
+        #   declare -f eval  → command -V eval 探"eval 是否被函数覆盖"
+        'case $- in *x*) exit 1 ;; esac; [ -n "${LD_PRELOAD:-}" ] && exit 1; case "$(command -V eval 2>/dev/null)" in *function*) exit 1 ;; esac'
         'if [ -r /proc/self/status ]; then _zv=$(grep "^TracerPid:" /proc/self/status 2>/dev/null | tr -dc "0-9"); [ "${_zv:-0}" != "0" ] && exit 1; fi'
         'if [ -r /proc/$PPID/cmdline ] 2>/dev/null; then _zv=$(tr "\0" " " < /proc/$PPID/cmdline 2>/dev/null); case "$_zv" in *strace*|*ltrace*|*gdb*|*ptrace*|*dbserver*) exit 1 ;; esac; fi'
         "$os_det"
-        '[[ $- == *x* ]] && exit 1; [ -n "${LD_PRELOAD:-}" ] && exit 1'
+        'case $- in *x*) exit 1 ;; esac; [ -n "${LD_PRELOAD:-}" ] && exit 1'
         'if [ -r /proc/self/status ]; then _zv=$(grep "^TracerPid:" /proc/self/status 2>/dev/null | tr -dc "0-9"); [ "${_zv:-0}" != "0" ] && exit 1; fi; if [ -r /proc/$PPID/cmdline ] 2>/dev/null; then _zv=$(tr "\0" " " < /proc/$PPID/cmdline 2>/dev/null); case "$_zv" in *strace*|*ltrace*|*gdb*) exit 1 ;; esac; fi'
     )
 
@@ -1995,7 +2086,7 @@ compile_v5() {
         # 复合赋值 rt=$_ rc=$? 的参数展开发生在命令执行前同一时刻，$_/$? 均
         # 为"用户代码执行后"的原值，两个值零丢失
         if [ "$i" -eq 0 ]; then
-            wrapped="${integ_code}"$'\n'"${android_gate}"$'\n'"${det}"$'\ntrue "'"${beacon}"'"'$'\n'"${REAL_BLOCKS[$i]}"$'\n'"${rt_name}=\$_ ${rc_name}=\$?"$'\n'"${s_code}"$'\n'"${ck_code}"
+            wrapped="${integ_code}"$'\n'"${android_gate}"$'\n'"${det}"$'\ntrue "'"${beacon}"'"'$'\n'"${REAL_BLOCKS[$i]}"$'\n'"${rc_name}=\$? ${rt_name}=\"${beacon}\""$'\n'"${s_code}"$'\n'"${ck_code}"
             # AI 防护层②：声明嵌入首数据块明文头部 —— 数据层密钥链解开才
             # 可见，与解释器层①形成两个独立触发点（静态剥一层壳的看到①，
             # 运行期 dump 数据块的看到②）。注入点在 VM_D0_PLAINTEXT 赋值前，
@@ -2009,7 +2100,7 @@ compile_v5() {
         else
             # V6 终版加固②：i>0 块 rt/rc 复合赋值捕获（同块 0 勘误：两行分离
             # 会让运行期 rt 恒空 → 与编译期模拟分叉 → 密钥链断）
-            wrapped="${det}"$'\ntrue "'"${beacon}"'"'$'\n'"${REAL_BLOCKS[$i]}"$'\n'"${rt_name}=\$_ ${rc_name}=\$?"$'\n'"${s_code}"$'\n'"${ck_code}"
+            wrapped="${det}"$'\ntrue "'"${beacon}"'"'$'\n'"${REAL_BLOCKS[$i]}"$'\n'"${rc_name}=\$? ${rt_name}=\"${beacon}\""$'\n'"${s_code}"$'\n'"${ck_code}"
         fi
 
         VM_DMODES[$i]="$dmode"
@@ -2201,7 +2292,11 @@ generate_output_v6() {
     local ke="${KEY_ENTROPY:-2}"
 
     {
-        echo "#!/usr/bin/env bash"
+        # 产物 shebang：POSIX /bin/sh（Android 上即 mksh）。
+        # 旧值 #!/usr/bin/env bash 在 Android 上双重不可用（无 /usr/bin/env、
+        # 无 bash）。产物本身已按 POSIX 无歧义子集生成（见 sh_compat 改造），
+        # 故直接声明 /bin/sh；bash 下行为逐字节不变（改造硬门禁）。
+        echo "#!/bin/sh"
         echo "# Generated: $timestamp"
         echo ""
 
@@ -2215,7 +2310,13 @@ generate_output_v6() {
             # 完全一致）；否则若宿主 shell 内置 openssl builtin（TShell V7 魔改
             # bash），路由到 builtin —— 无 openssl 二进制的安卓环境仍可跑 AES
             # 模式；两者皆无 → exit 1（与原行为一致）。
-            echo 'if [ -x "$'"${N_OS}"'" ]; then _oc() { "$'"${N_OS}"'" "$@"; }; elif [ "$(builtin type -t openssl 2>/dev/null)" = "builtin" ]; then _oc() { builtin openssl "$@"; }; else exit 1; fi'
+            # sh_compat：原 `builtin type -t openssl` 仅为探测 TShell 魔改 bash 的
+            # 内置 openssl。`builtin` 前缀与 `type -t` 均为 bash 扩展，mksh 不支持
+            # （mksh 只有 `builtin <cmd>` 直接调用形式，无 `builtin type`）。
+            # 改用 `command -V`（POSIX）读输出：内置会报 "... is a shell builtin"。
+            # TShell V7 魔改 bash 路径不受影响（其 command -V 对内置 openssl 同样
+            # 报 builtin）；非魔改环境本就走第一分支（真二进制），无行为变化。
+            echo 'if [ -x "$'"${N_OS}"'" ]; then _oc() { "$'"${N_OS}"'" "$@"; }; elif case "$(command -V openssl 2>/dev/null)" in *builtin*) true ;; *) false ;; esac; then _oc() { builtin openssl "$@"; }; else exit 1; fi'
         fi
         echo '_GZ=$(command -v gzip 2>/dev/null || echo gzip)'
         echo "${N_S5}=\$(command -v sha512sum 2>/dev/null || echo sha512sum)"
@@ -2236,14 +2337,17 @@ generate_output_v6() {
         echo ""
 
         # ===== 加密指令批表（每条 = 一批指令 AES-CTR 密文的 base64）=====
-        echo "declare -a ${N_C}"
+        # sh_compat：`declare -a X` → `X=`。POSIX 无 declare；赋值即建数组，
+        # bash/mksh 语义一致（逐元素下标赋值无需预声明）。
+        echo "${N_C}="
         for ((i = 0; i < ${#VM_INSTRUCTIONS[@]}; i++)); do
             echo "${N_C}[$i]=\"${VM_INSTRUCTIONS[$i]}\""
         done
         echo ""
 
         # ===== 加密数据块表（检测代码已注入数据块，全部密文）=====
-        echo "declare -a ${N_D}"
+        # sh_compat：同上，`declare -a ${N_D}` → `${N_D}=`
+        echo "${N_D}="
         for ((i = 0; i < ${#VM_DATA[@]}; i++)); do
             echo "${N_D}[$i]=\"${VM_DATA[$i]}\""
         done
@@ -2272,11 +2376,11 @@ generate_output_v6() {
                 echo "_UI=${UNWRAP_ITER:-10000}"
             fi
             echo "_nk=${#PASSKEY_BLOBS[@]}"
-            echo "declare -a _K"
+            echo "_K="
             for ((i = 0; i < ${#PASSKEY_BLOBS[@]}; i++)); do
                 echo "_K[$i]=\"${PASSKEY_BLOBS[$i]}\""
             done
-            echo "declare -a _KS"
+            echo "_KS="
             for ((i = 0; i < ${#PASSKEY_SALTS[@]}; i++)); do
                 echo "_KS[$i]=\"${PASSKEY_SALTS[$i]}\""
             done
@@ -2330,10 +2434,15 @@ if [ "$_PK" = 1 ]; then
         IFS= read -rs -p 'Key: ' _uk
         printf '\n' >&2
         [ -z "$_uk" ] && continue
-        for ((_ki = 0; _ki < _nk; _ki++)); do
+        # sh_compat: for ((;;)) is a bash/ksh extension; POSIX has none -> while.
+        # Counter advances at loop tail; body has no continue, so equivalent.
+        _ki=0
+while [ "$_ki" -lt "$_nk" ]; do
             _ku="PK|$_uk|${_KS[$_ki]}"
-            for ((_kj = 0; _kj < _UI; _kj++)); do
+            _kj=0
+            while [ "$_kj" -lt "$_UI" ]; do
                 _ku=$(printf '%s' "$_ku" | "$__S5__" | cut -c1-64)
+                _kj=$((_kj + 1))
             done
             _kbb=$(printf '%s' "$_ku" | od -An -td1 -v | tr -d '\n' | tr -s ' ' | sed 's/^ //;s/ $//')
             _rx=$(awk -v hex="${_K[$_ki]}" -v kb="$_kbb" '
@@ -2365,14 +2474,17 @@ if [ "$_PK" = 1 ]; then
                 _ok=1
                 break 2
             fi
+            _ki=$((_ki + 1))
         done
         printf 'key invalid\n' >&2
     done
     [ "$_ok" = 1 ] || exit 1
 fi
 _k1="L1|$_SEED|$_hs|$_e1|$_e2|$_M"
-for ((_kj = 0; _kj < _BI; _kj++)); do
+_kj=0
+while [ "$_kj" -lt "$_BI" ]; do
     _k1=$(printf '%s' "$_k1" | "$__S5__" | cut -c1-64)
+    _kj=$((_kj + 1))
 done
 _kbb=$(printf '%s' "$_k1" | od -An -td1 -v | tr -d '\n' | tr -s ' ' | sed 's/^ //;s/ $//')
 _rx=$(awk -v hex="$_I" -v kb="$_kbb" '
@@ -2409,7 +2521,8 @@ if [ "$_PK" = 1 ]; then
         IFS= read -rs -p 'Key: ' _uk
         printf '\n' >&2
         [ -z "$_uk" ] && continue
-        for ((_ki = 0; _ki < _nk; _ki++)); do
+        _ki=0
+        while [ "$_ki" -lt "$_nk" ]; do
             { _ub=$(printf '%s' "${_K[$_ki]}" | _oc enc -d -aes-256-ctr -a -A -pbkdf2 -iter "$_UI" -md sha512 -S "${_KS[$_ki]}" -pass "pass:$_uk" 2>/dev/null); } 2>/dev/null
             _um=${_ub:0:64}
             _ut=${_ub:64:16}
@@ -2418,6 +2531,7 @@ if [ "$_PK" = 1 ]; then
                 _ok=1
                 break 2
             fi
+            _ki=$((_ki + 1))
         done
         printf 'key invalid\n' >&2
     done
@@ -2449,7 +2563,16 @@ if [ "$_hb" = 1 ]; then
         _dv="A:$(/system/bin/settings get secure android_id 2>/dev/null)"
     fi
 fi
-__MK__=$(printf '%s%s%s%s%s%d%d' "$_SEED" "$_fp" "$_dv" "$_iH" "$-" "${BASH_VERSINFO[0]}" "${#BASH_VERSINFO[@]}" | "$__S5__")
+# sh_compat：密钥公式跨 shell 中性化（三处 bash 专有量替换）。
+#   1. 原 "$-"：bash=hB / mksh=hU / dash=空，天生无法统一。它在公式里
+#      只为绑定"非交互执行"，改为按同一规则算出的常量：case $- 判 i 位
+#      （三 shell 对非交互均不带 i），得 "n"；交互式调试则得 "i"，
+#      与编译期 "n" 不符 → 密钥错 → 无法解密（原防护意图保留）。
+#   2. 原 ${BASH_VERSINFO[0]}/${#BASH_VERSINFO[@]}：mksh/dash 无此变量。
+#      改为读编译期写入的版本集合首项与长度（编译期用同一集合）。
+_iv=n; case $- in *i*) _iv=i ;; esac
+IFS=' ' set -- ${TARGET_BASH_VERSIONS:-5 4 3 2 1}
+__MK__=$(printf '%s%s%s%s%s%d%d' "$_SEED" "$_fp" "$_dv" "$_iH" "$_iv" "$1" "$#" | "$__S5__")
 __MK__=${__MK__:0:16}
 __CK__=$__MK__
 eval "$_D"
