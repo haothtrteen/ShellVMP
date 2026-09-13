@@ -116,7 +116,27 @@ Flutter release 产物：
 
 ---
 
-## 五、贡献方向
+## 五、通用化路线（跨 shell 保护）
+
+> 完整分析见 [`GENERALIZATION_FEASIBILITY.md`](GENERALIZATION_FEASIBILITY.md)（含实测数据与功能剥离表）。
+
+**简要结论**：跨 shell **不是语法问题，是密钥链把解释器语义烧进了密文**。
+
+- 密钥链 7 个因子里，`SEED`/`FP`/`DV`/`IH` **4 项与 shell 无关**，`$-`/`VERSINFO[0]`/`len(VERSINFO[])` **3 项是"注入常量"的机械操作**。
+- 真正的硬骨头是 `_am()` 里的 **`$RANDOM` 状态机** —— 编译期 `sim_random_next()` 从零复刻了 glibc `random()`，与 bash 逐比特对齐。dash **没有 `$RANDOM`**（实测得字面量），zsh 算法不同且受 `.zshrc` 影响。
+- **跨 shell 与"必须模拟执行"是同一枚硬币的两面**：要跨 shell，就得剥离最高强度的三层绑链（`_am` 推进 / `$_`·`$?` 绑链 / ISA 令牌化）。
+
+| 档位 | 内容 | 工作量 | 建议 |
+|---|---|---|---|
+| **P0** | 产品化：`V7_SELF=1` 转正 + 输入面体检工具 + README 边界 | **半天** | ⭐⭐⭐⭐⭐ 直击真实痛点 |
+| P3 | dash-only 子集 PoC（放弃 zsh，含止损点） | 3-5 天 | ⭐⭐ 边际收益有限 |
+| P5 | 完整跨 shell（dash+ash+mksh+zsh） | 2-4 周 | ⭐ 不划算 |
+
+**关键认知**：用户感知的"只能保护 bash"里，约 **80% 已经解决** —— `V7_SELF=1` 内嵌静态 bash 让产物跨平台（aarch64 bionic/musl + x86_64 全覆盖），且 `v7_wrap.sh` 本身就是 `#!/bin/sh`（外层载体已是纯 POSIX）。缺的是"写成默认路径 + 把边界说诚实"。
+
+---
+
+## 六、贡献方向
 
 最需要的贡献（按价值排序）：
 

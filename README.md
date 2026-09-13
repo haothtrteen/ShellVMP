@@ -245,6 +245,7 @@ ShellVMP/
 - **V7-ISA 绑定 bash 5.2**（解释器魔改层的插桩点依赖具体源码结构）。bash 主版本升级时需要重新校准插桩点——这层是"可移植性最弱、但价值最高"的部分。
 - **VMP 保护收益有限**：本架构最终把脚本交给 `eval`，VMP 只能保护"壳"。详见 [`docs/VMP_NOTES.md`](docs/VMP_NOTES.md)。
 - **真机产物**未随仓库分发（体积 + 隐私）。
+- **产物运行期锁定 bash**（非语法限制，是密钥链把解释器语义烧进了密文）。跨 shell 的完整分析、功能剥离表与三档路线见 [`docs/GENERALIZATION_FEASIBILITY.md`](docs/GENERALIZATION_FEASIBILITY.md)。**注**：目标机无需装 bash —— `V7_SELF=1` 内嵌静态解释器即可跨平台运行。
 
 ---
 
