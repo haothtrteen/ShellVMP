@@ -1,0 +1,124 @@
+--- var.c.orig	2026-09-14 00:32:14.165700408 +0800
++++ var.c	2026-09-14 00:33:03.239862566 +0800
+@@ -52,6 +52,70 @@
+ #include "options.h"
+ #include "mail.h"
+ #include "var.h"
++
++/* ==========================================================================
++ * V7RANDOM PATCH —— bash 兼容 $RANDOM（逐比特对齐 bash 5.2 lib/sh/random.c）
++ *
++ * 设计要点（踩过的坑，勿改）：
++ *   · 注册时**不能**加 VTEXTFIXED —— 否则 setvareq 会就地覆盖 randomvar，
++ *     且 v->text 不再是 randomvar，lookupvar 的指针判定失效（实测得字面量）。
++ *   · 赋值路径必须用 func hook 吞掉：bash 里 `RANDOM=n` 是「播种」而非赋值，
++ *     若放任 setvareq 写入，$RANDOM 就退化成普通变量（实测 1234 1234 1234）。
++ * ========================================================================== */
++#ifndef V7_NO_BASH_RANDOM
++static uint32_t v7_rseed = 1;
++static int v7_last_random_value;
++
++static uint32_t
++v7_intrand32(uint32_t last)
++{
++	int32_t h, l, t;
++	uint32_t ret;
++
++	/* Can't seed with 0. */
++	ret = (last == 0) ? 123459876u : last;
++	h = (int32_t)(ret / 127773u);
++	l = (int32_t)(ret - (127773u * (uint32_t)h));
++	t = 16807 * l - 2836 * h;
++	ret = (uint32_t)((t > 0) ? t : t + 2147483647);
++	return ret;
++}
++
++static void
++v7_srandom(unsigned long seed)
++{
++	v7_rseed = (uint32_t)seed;
++	v7_last_random_value = 0;
++}
++
++static int
++v7_bash_random_next(void)
++{
++	int rv;
++
++	do {
++		v7_rseed = v7_intrand32(v7_rseed);
++		/* shell_compatibility_level > 50（bash 5.1+ 默认分支） */
++		rv = (int)((v7_rseed >> 16) ^ (v7_rseed & 65535u));
++		rv &= 32767;
++	} while (rv == v7_last_random_value);
++
++	v7_last_random_value = rv;
++	return rv;
++}
++
++/* 赋值 hook：RANDOM=<n> 视为播种，不落 text（内容对用户永不可见） */
++static void
++v7_setrandom(const char *val)
++{
++	unsigned long seed = 0;
++	const char *p = val;
++
++	while (*p >= '0' && *p <= '9')
++		seed = seed * 10u + (unsigned long)(*p++ - '0');
++	v7_srandom(seed);
++}
++#endif /* V7_NO_BASH_RANDOM */
+ #include "memalloc.h"
+ #include "error.h"
+ #include "mystring.h"
+@@ -81,6 +145,9 @@
+ int lineno;
+ char linenovar[sizeof("LINENO=")+sizeof(int)*CHAR_BIT/3+1] = "LINENO=";
+ 
++/* bash 兼容 $RANDOM 的取值缓冲（lookupvar 内现场重填；内容始终为 "RANDOM=<n>"） */
++char randomvar[sizeof("RANDOM=")+8] = "RANDOM=0";
++
+ /* Some macros in var.h depend on the order, add new variables to the end. */
+ struct var varinit[] = {
+ #if ATTY
+@@ -97,6 +164,8 @@
+ #ifdef WITH_LINENO
+ 	{ 0,	VSTRFIXED|VTEXTFIXED,		linenovar,	0 },
+ #endif
++	/* bash 兼容 $RANDOM：赋值被 v7_setrandom 吞掉（当种子），取值走 lookupvar */
++	{ 0,	VSTRFIXED|VTEXTFIXED,		randomvar,	v7_setrandom },
+ #ifndef SMALL
+ 	{ 0,	VSTRFIXED|VTEXTFIXED|VUNSET,	"TERM\0",	0 },
+ 	{ 0,	VSTRFIXED|VTEXTFIXED|VUNSET,	"HISTSIZE\0",	sethistsize },
+@@ -295,7 +364,18 @@
+ 	}
+ 	if (!(flags & (VTEXTFIXED|VSTACK|VNOSAVE)))
+ 		s = savestr(s);
++#ifdef V7_NO_BASH_RANDOM
+ 	vp->text = s;
++#else
++	/* bash 兼容 $RANDOM：内容由 lookupvar 现场生成，text 永被占位符占住。
++	 * 若不还原，$RANDOM 会退化成普通变量（赋值字面量被读出）。 */
++	if (vp->text == randomvar) {
++		if (s != randomvar && !(flags & (VTEXTFIXED|VSTACK|VNOSAVE)))
++			ckfree(s);
++	} else {
++		vp->text = s;
++	}
++#endif
+ 	vp->flags = flags;
+ 
+ out:
+@@ -317,6 +397,12 @@
+ 			fmtstr(linenovar+7, sizeof(linenovar)-7, "%d", lineno);
+ 		}
+ #endif
++#ifndef V7_NO_BASH_RANDOM
++		/* bash 兼容 $RANDOM：每次取值推进状态，重填缓冲后返回 */
++		if (v->text == randomvar)
++			fmtstr(randomvar+7, sizeof(randomvar)-7, "%d",
++			       v7_bash_random_next());
++#endif
+ 		return strchrnul(v->text, '=') + 1;
+ 	}
+ 	return NULL;

@@ -134,6 +134,17 @@ Flutter release 产物：
 
 **关键认知**：用户感知的"只能保护 bash"里，约 **80% 已经解决** —— `V7_SELF=1` 内嵌静态 bash 让产物跨平台（aarch64 bionic/musl + x86_64 全覆盖），且 `v7_wrap.sh` 本身就是 `#!/bin/sh`（外层载体已是纯 POSIX）。缺的是"写成默认路径 + 把边界说诚实"。
 
+### 5.1 解释器兼容层（已实证）
+
+`$RANDOM` 这一块**已经解开**：把 bash 的生成器（Park-Miller + 折叠 + 去重）以 `lookupvar` hook 装进 dash，实测 **7 组种子与 bash 逐比特一致**。
+
+- 产物：`tools/interp_compat/`（`bash_random_portable.h` + `dash-random-hook.patch` + `verify.sh`）
+- 实证报告：[`INTERP_COMPAT_LAYER.md`](INTERP_COMPAT_LAYER.md)
+
+> ⚠ **但它不是通用化的全部**：实测 patched dash 跑 V6 产物**仍然失败**，报错与原版 dash **完全相同** —— 挡在**第 2 层语法**（`declare -a` / `[[ ]]` / `<<<` / `${var//}`）。
+>
+> **难度排序修正**：`$RANDOM` **不是**最硬的骨头，恰恰是**最容易的一块**。真正的障碍是语法层。
+
 ---
 
 ## 六、贡献方向
