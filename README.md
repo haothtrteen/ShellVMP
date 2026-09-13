@@ -254,6 +254,25 @@ ShellVMP/
 - **解释器兼容层（已被取代，保留作历史）**：`tools/interp_compat/` 原方案是给 dash 打 C 补丁装 bash 兼容 `$RANDOM`。现已被**纯算术内联 PRNG**（`_rn()`，三 shell 逐位一致、零依赖）取代 —— 无需改任何 shell 源码。详见 [`docs/INTERP_COMPAT_LAYER.md`](docs/INTERP_COMPAT_LAYER.md) 顶部的状态更新。
 - **跨 shell 的外部方案已核查完毕**：社区同类工具（Babelfish / Reef / Rosetta-shell / Zshrs / zsh `emulate` / `libdash` 等）**均无法直接复用**，其中五条常见思路已被实测或事实排除。详见 [`docs/PRIOR_ART_REVIEW.md`](docs/PRIOR_ART_REVIEW.md)。
 
+### 产物能在哪些 shell 上跑（实测矩阵）
+
+| shell | V6 产物 | 说明 |
+|---|---|---|
+| **bash** | ✅ 完整 | 原生目标，输出与明文逐字节一致 |
+| **mksh** | ✅ 完整 | 原生目标（Android `/system/bin/sh` 就是它），输出与 bash 逐字节一致 |
+| dash | ❌ | V6 产物用数组下标，dash 直接报错；需标量仿真层 |
+| zsh | ❌ | `assignment to invalid subscript range`；已明确不做 |
+
+> **"天然原生兼容 bash / mksh" 这句话，只对纯脚本线成立。**
+> VMP bash 线额外要求宿主能带自控 bash 二进制；ELF 线不依赖 C 层但**放弃 VMP 令牌化**。
+> 三条线的能力/代价对照见 [`docs/SHELL_TARGETS.md`](docs/SHELL_TARGETS.md)。
+
+### 自己编译各 shell 的 C 层补丁
+
+要把同一套 C 层补丁挂到不同解释器上（bash 已通、mksh 已通），
+逐条注入步骤、三个 Android libc 线的取舍、以及踩过的坑全部整理在
+**[`docs/BUILD_PER_SHELL.md`](docs/BUILD_PER_SHELL.md)**。
+
 ---
 
 ## License

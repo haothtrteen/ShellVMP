@@ -1,0 +1,102 @@
+# 靶子平台矩阵
+
+> 这份表回答："**我的产物到底能在哪些平台上跑起来？**"
+>
+> 出发点（用户原话）：*"在安卓上我可以使用 adb shell，或者在 apk 里内置那个内嵌的
+> bash 解释器跑起来。实际上或许我们应该考虑，我们的产物可以在哪些平台上跑起来，
+> 而不是兼容所有 shell。"* —— 因此本表按**平台**组织，不按 shell 组织。
+>
+> 结论先行：**纯脚本线天然原生兼容 bash 与 mksh**；VMP bash 线要宿主自控；
+> ELF 线不依赖 C 层但丢 VMP 令牌化。
+
+---
+
+## 一、平台矩阵
+
+| 平台 | 宿主 shell | 纯脚本线 | bash 线（VMP） | ELF 线 | 备注 |
+|---|---|---|---|---|---|
+| **Android / APK 内嵌 bash** | 自带 bash | ✅ | ✅ **最佳** | ✅ | 宿主完全自控，可带 r33 bionic 二进制 |
+| **Android / adb shell** | mksh | ✅（mksh 原生） | ⚠️ 需先推 bash | ✅ | `/system/bin/sh` 是 mksh 不是 dash |
+| **Android / Termux** | bash | ✅ | ✅ | ✅ | 本机 aarch64，可本地 VMP |
+| **Linux 服务器** | bash | ✅ | ✅ | ✅ | x86_64 开发路径 |
+| **Debian 裸 exec** | dash (`/bin/sh`) | ❌ | ❌ | ⚠️ | 脚本线要 shebang 自适应（见 §3） |
+| **busybox 环境** | ash | ❌ | ❌ | ⚠️ | 与 dash 同因（无数组） |
+| macOS / zsh | zsh | ❌ | ❌ | ⚠️ | 明确不做 |
+
+---
+
+## 二、为什么 Android 组合拳最顺
+
+Android 上其实有**两条互不依赖**的落地路径，且可以叠加：
+
+1. **自己带 bash**（APK 内置 / Termux / 推入 `adb`）：宿主可控 → 直接上 **bash 线**，
+   拿到完整的 VMP 令牌化保护。这是保护强度最高的一档。
+2. **不控宿主、只用系统 shell**：`adb shell` 进来是 **mksh** → 走**纯脚本线**，
+   产物已经在 mksh 下实测与 bash 逐字节一致。
+
+> 这也是为什么"兼容所有 shell"不是正确目标 —— **Android 的真实靶子只有
+> bash 与 mksh 两个**（系统 `/system/bin/sh` = mksh）。dash/zsh 在这个平台上
+> 几乎不出现，为它们投入的成本收不回来。
+
+---
+
+## 三、shebang 自适应（纯脚本线的短板补丁）
+
+纯脚本线目前的短板：产物头部写死 `#!/bin/sh`。在 Debian 这类 `/bin/sh → dash`
+的平台上，直接执行会落到 dash 上，而 dash 没有数组 → 失败。
+
+**处置（已批准，待实现）**：做进 V6 流程
+
+- 构建期：按目标平台写 shebang。
+- 运行期：检测到不支持的 shell 时，`exec bash "$0" "$@"` 回退，
+  并给出**人类可读的错误**，而不是现在的静默 `rc=2`。
+
+---
+
+## 四、三条线的能力/代价（选型用）
+
+| | 纯脚本线 | bash 线（VMP） | ELF 线 |
+|---|---|---|---|
+| **VMP 令牌化保护** | ❌ | ✅ | ❌ |
+| **需要自控宿主** | ❌ | ✅（要带 bash） | ❌ |
+| **宿主 shell 依赖** | bash **或** mksh | 自带 bash（5.2.x） | 无（内嵌静态 bash） |
+| **保护强度** | 混淆级 | VMP 级 | "加固加密级" |
+| **产物体积** | 小（几十 KB） | 中 | 大（含静态 bash，约 3–6 MB） |
+
+> **关键取舍**：ELF 线落地最省心，但**明文必然要过一遍真实 shell**，
+> 所以 VMP 令牌化（字节码级保护）拿不到。这是**物种差异，不是程度差异** ——
+> 选了 ELF 线就是放弃了最强的那一档，不应预期"差不多"。
+
+---
+
+## 五、验收基准
+
+任意平台上线前，用同一份样例脚本跑三方对照，输出必须**逐字节一致**：
+
+```sh
+# 明文
+bash demo.sh
+# 纯脚本线（mksh）
+mksh demo.protected.sh
+# bash 线
+V7_SELF=1 sh demo.v7.bash /dev/null
+```
+
+实测通过的对照样例（9 块脚本，`for` 循环 + 变量展开 + 引号内含 `$var`）：
+
+```
+S01 begin / S02 obfuscator / S03 信号=0 / S04 a,b,c / S05 has "quotes" and $vars
+S06 end / power by haothtrteen / T33 done / over
+```
+
+> **已知边界**：≥10 块的脚本会静默 `exit 1`（独立于 shell 的既有项，
+> 见 [`BACKLOG.md`](BACKLOG.md) §二）；9 块及以下逐字节一致。
+
+---
+
+## 六、待办
+
+- [ ] shebang 自适应做进 V6 流程（§3）—— V6 内部改造
+- [ ] APK 内嵌 bash 的发布形态（体积、ABI 拆分、签名）
+- [ ] dash / busybox ash 的标量-数组仿真层（P2，可能顺带修 busybox）
+- [ ] ≥10 块静默 `exit 1` 的根因闭环（`BACKLOG.md` §二）

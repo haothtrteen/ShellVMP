@@ -896,6 +896,7 @@ gen_rand_var() {
             case "_${suffix}" in
                 _mk|_ck|_c|_d|_s|_di|_rt|_f|_e|_p|_n|_sa|_sb|_sc|_sd|_zz|_zy|_zv) continue ;;
                 _am|_ra|_rb|_pm|_nw|_t0|_t|_pp|_md|_rs|_B64|_SH256|_PRF|_I) continue ;;
+                _rn|_rr|_rl|_rh|_rlo|_rq|_ro|_oifs|_nial|_iai|_rt) continue ;;
                 _da|_ke|_kb|_r|_i|_j|_b|_encoded|_hexdata|_bytes|_inst|_code|_ok|_pt) continue ;;
                 _fp|_iH|_f1|_f2|_f3|_f5) continue ;;
                 _a|_k|_m|_v|_bi|_bb|_bj|_bk) continue ;;
@@ -909,6 +910,7 @@ gen_rand_var() {
             case "$name" in
             _mk|_ck|_c|_d|_s|_di|_rt|_f|_e|_p|_n|_sa|_sb|_sc|_sd|_zz|_zy|_zv) continue ;;
             _am|_ra|_rb|_pm|_nw|_t0|_t|_pp|_md|_rs|_B64|_SH256|_PRF|_I) continue ;;
+            _rn|_rr|_rl|_rh|_rlo|_rq|_ro|_oifs|_nial|_iai|_rt) continue ;;
             _da|_ke|_kb|_r|_i|_j|_b|_encoded|_hexdata|_bytes|_inst|_code|_ok|_pt) continue ;;
             _fp|_iH|_f1|_f2|_f3|_f5) continue ;;
             _a|_k|_m|_v|_bi|_bb|_bj|_bk) continue ;;
@@ -1041,6 +1043,7 @@ gen_randomized_interpreter() {
     local I_DEC I_ENC V_DA V_KE V_KF
     local V_PC V_INST V_CODE V_OK V_PT V_B V_NB V_NI V_II V_IAL V_RJ
     local V_AM V_RA V_RB V_PM V_NW V_T0 V_T V_MD
+    local V_RN V_RR V_RL V_RH V_RLO V_RQ V_RO
     I_DEC="$(gen_rand_var)"; I_ENC="$(gen_rand_var)"
     V_DA="$(gen_rand_var)"; V_KE="$(gen_rand_var)"; V_KF="$(gen_rand_var)"
     V_B="$(gen_rand_var)"; V_NB="$(gen_rand_var)"; V_NI="$(gen_rand_var)"; V_II="$(gen_rand_var)"
@@ -1050,6 +1053,16 @@ gen_randomized_interpreter() {
     V_AM="$(gen_rand_var)"; V_RA="$(gen_rand_var)"; V_RB="$(gen_rand_var)"; V_PM="$(gen_rand_var)"
     V_NW="$(gen_rand_var)"; V_T0="$(gen_rand_var)"; V_T="$(gen_rand_var)"
     V_MD="$(gen_rand_var)"
+    # r33f：_rn 是 _am 依赖的随机数函数，必须与 _am 同批随机化。
+    # 漏掉它的后果是静默的：sed 把 _am 改名为 V_AM，但 _am 体内的
+    # `_ra=$(_rn)` 仍留字面 _rn —— 而 _rn 的定义位于解释器模板中同样
+    # 会被改名的那一段之外，产物里根本不存在可调用的 _rn。
+    # => `_rn: command not found`，_ra/_rb 取值失败 => 密钥链分叉 =>
+    #    链式校验不过 => 毒化密钥静默 exit 1（只有 ≤10 块的短脚本因为
+    #    碰巧不走到该分支才幸存，长脚本必死）。
+    V_RN="$(gen_rand_var)"; V_RR="$(gen_rand_var)"; V_RL="$(gen_rand_var)"
+    V_RH="$(gen_rand_var)"; V_RLO="$(gen_rand_var)"; V_RQ="$(gen_rand_var)"
+    V_RO="$(gen_rand_var)"
 
     # builtin 模式：生成 _f/_e 的 awk 版函数体（x8 纯算术 + 4 原语，
     # 与编译期 builtin_enc_item/builtin_dec_item 逐字节互逆）
@@ -1086,27 +1099,6 @@ _e() {
     _tg=${_dg##* }
     printf '%s:%s' "$_ct" "${_tg:0:16}"
 }
-# sh_compat: portable equivalent of bash 5.1+ $RANDOM, used by _am() only.
-# Park-Miller minimal standard generator with the Schrage method to avoid
-# overflow, then the bash bit fold (rseed>>16)^(rseed&65535) & 32767, plus
-# the (rv==last) retry. _rn reads the _rr/_rl globals and prints its result
-# so that $( ) capture matches the "reference is a draw" semantics of the
-# $RANDOM it replaces. Pure arithmetic => identical in bash/mksh/dash.
-_rn() {
-    while :; do
-        [ "$_rr" -eq 0 ] && _rr=123459876
-        _rh=$(( _rr / 127773 ))
-        _rlo=$(( _rr - 127773 * _rh ))
-        _rt=$(( 16807 * _rlo - 2836 * _rh ))
-        [ "$_rt" -lt 0 ] && _rt=$(( _rt + 2147483647 ))
-        _rr=$_rt
-        _rt=$(( (_rr >> 16) ^ (_rr & 65535) ))
-        _rt=$(( _rt & 32767 ))
-        [ "$_rt" -ne "$_rl" ] && break
-    done
-    _rl=$_rt
-    printf '%s' "$_rt"
-}
 _am() {
     _rs=$(( (_rs * 1103515245 + 12345) & 0x7fffffff ))
     # sh_compat: the original `RANDOM=$_rs; _ra=$RANDOM; _rb=$RANDOM`
@@ -1117,8 +1109,8 @@ _am() {
     # _rn() reproduces bash bit-for-bit with pure arithmetic.
     _rr=$(( _rs & 0xFFFFFFFF ))
     _rl=0
-    _ra=$(_rn)
-    _rb=$(_rn)
+    _rn; _ra=$_ro
+    _rn; _rb=$_ro
     _pm=1
     [ $(( _p % 4 )) -eq 1 ] && {
         case "$(command -V eval 2>/dev/null)" in *builtin*) ;; *) _pm=0 ;; esac
@@ -1133,6 +1125,30 @@ _am() {
     _mk=$(printf '%s%d%d%d' "$_mk" "$_p" "$_ra" "$_rb" | "$_S5")
     _mk=${_mk:0:16}
     return 0
+}
+
+# sh_compat: portable equivalent of bash 5.1+ $RANDOM, used by _am() only.
+# 必须定义在 _am() 之后：builtin 模式下 gen_randomized_interpreter 的 awk 会把
+# 从 `^_f() {` 到 `^_am() {` 之间的整段（AES 版 _f/_e 函数体）替换掉，
+# 定义落在该区间内会被整段删除 -> `_rn: command not found`（r33f 实测）。
+# shell 只需在【调用前】定义，_am 的调用点远在其后，放这里安全。
+# Park-Miller minimal standard generator + Schrage method 防溢出，再做 bash
+# 的位折叠 (rseed>>16)^(rseed&65535) & 32767，含 (rv==last) 重抽。
+# 纯算术实现 => bash/mksh/dash 三 shell 逐比特一致。
+_rn() {
+    while :; do
+        [ "$_rr" -eq 0 ] && _rr=123459876
+        _rh=$(( _rr / 127773 ))
+        _rlo=$(( _rr - 127773 * _rh ))
+        _rq=$(( 16807 * _rlo - 2836 * _rh ))
+        [ "$_rq" -lt 0 ] && _rq=$(( _rq + 2147483647 ))
+        _rr=$_rq
+        _rq=$(( (_rr >> 16) ^ (_rr & 65535) ))
+        _rq=$(( _rq & 32767 ))
+        [ "$_rq" -ne "$_rl" ] && break
+    done
+    _rl=$_rq
+    _ro=$_rq
 }
 _t0=${EPOCHREALTIME:-0}
 _t0=${_t0//.}
@@ -1217,7 +1233,7 @@ while [ "$_p" -lt "$_n" ]; do
     # 会被用户脚本的 set -e 误杀（首块即 set -e 时必死，rc=1 无输出）
     _p=$((_p + 1))
 done
-unset _mk _ck _p _n _s _di _rt _sa _sb _sc _sd _zz _zy _zv _rs _ra _rb _pm _nw _t0 _ok _pt _pp _t _md _b _inst _rn _rr _rl _rh _rlo _oifs _nial _iai 2>/dev/null
+unset _mk _ck _p _n _s _di _rt _sa _sb _sc _sd _zz _zy _zv _rs _ra _rb _pm _nw _t0 _ok _pt _pp _t _md _b _inst _rq _ro _rr _rl _rh _rlo _oifs _nial _iai 2>/dev/null
 I_EOF
 )
     else
@@ -1245,27 +1261,6 @@ _e() {
     _tg=${_dg##* }
     printf '%s:%s' "$_ct" "${_tg:0:16}"
 }
-# sh_compat: portable equivalent of bash 5.1+ $RANDOM, used by _am() only.
-# Park-Miller minimal standard generator with the Schrage method to avoid
-# overflow, then the bash bit fold (rseed>>16)^(rseed&65535) & 32767, plus
-# the (rv==last) retry. _rn reads the _rr/_rl globals and prints its result
-# so that $( ) capture matches the "reference is a draw" semantics of the
-# $RANDOM it replaces. Pure arithmetic => identical in bash/mksh/dash.
-_rn() {
-    while :; do
-        [ "$_rr" -eq 0 ] && _rr=123459876
-        _rh=$(( _rr / 127773 ))
-        _rlo=$(( _rr - 127773 * _rh ))
-        _rt=$(( 16807 * _rlo - 2836 * _rh ))
-        [ "$_rt" -lt 0 ] && _rt=$(( _rt + 2147483647 ))
-        _rr=$_rt
-        _rt=$(( (_rr >> 16) ^ (_rr & 65535) ))
-        _rt=$(( _rt & 32767 ))
-        [ "$_rt" -ne "$_rl" ] && break
-    done
-    _rl=$_rt
-    printf '%s' "$_rt"
-}
 _am() {
     _rs=$(( (_rs * 1103515245 + 12345) & 0x7fffffff ))
     # sh_compat: the original `RANDOM=$_rs; _ra=$RANDOM; _rb=$RANDOM`
@@ -1276,8 +1271,8 @@ _am() {
     # _rn() reproduces bash bit-for-bit with pure arithmetic.
     _rr=$(( _rs & 0xFFFFFFFF ))
     _rl=0
-    _ra=$(_rn)
-    _rb=$(_rn)
+    _rn; _ra=$_ro
+    _rn; _rb=$_ro
     _pm=1
     [ $(( _p % 4 )) -eq 1 ] && {
         case "$(command -V eval 2>/dev/null)" in *builtin*) ;; *) _pm=0 ;; esac
@@ -1292,6 +1287,30 @@ _am() {
     _mk=$(printf '%s%d%d%d' "$_mk" "$_p" "$_ra" "$_rb" | "$_S5")
     _mk=${_mk:0:16}
     return 0
+}
+
+# sh_compat: portable equivalent of bash 5.1+ $RANDOM, used by _am() only.
+# 必须定义在 _am() 之后：builtin 模式下 gen_randomized_interpreter 的 awk 会把
+# 从 `^_f() {` 到 `^_am() {` 之间的整段（AES 版 _f/_e 函数体）替换掉，
+# 定义落在该区间内会被整段删除 -> `_rn: command not found`（r33f 实测）。
+# shell 只需在【调用前】定义，_am 的调用点远在其后，放这里安全。
+# Park-Miller minimal standard generator + Schrage method 防溢出，再做 bash
+# 的位折叠 (rseed>>16)^(rseed&65535) & 32767，含 (rv==last) 重抽。
+# 纯算术实现 => bash/mksh/dash 三 shell 逐比特一致。
+_rn() {
+    while :; do
+        [ "$_rr" -eq 0 ] && _rr=123459876
+        _rh=$(( _rr / 127773 ))
+        _rlo=$(( _rr - 127773 * _rh ))
+        _rq=$(( 16807 * _rlo - 2836 * _rh ))
+        [ "$_rq" -lt 0 ] && _rq=$(( _rq + 2147483647 ))
+        _rr=$_rq
+        _rq=$(( (_rr >> 16) ^ (_rr & 65535) ))
+        _rq=$(( _rq & 32767 ))
+        [ "$_rq" -ne "$_rl" ] && break
+    done
+    _rl=$_rq
+    _ro=$_rq
 }
 _t0=${EPOCHREALTIME:-0}
 _t0=${_t0//.}
@@ -1368,7 +1387,7 @@ while [ "$_p" -lt "$_n" ]; do
     _c[$_p]=$(_e "$_b" "$_mk" "$_p")
     _p=$((_p + 1))
 done
-unset _mk _ck _p _n _s _di _rt _sa _sb _sc _sd _zz _zy _zv _rs _ra _rb _pm _nw _t0 _ok _pt _pp _t _md _b _inst _rn _rr _rl _rh _rlo _oifs _nial _iai 2>/dev/null
+unset _mk _ck _p _n _s _di _rt _sa _sb _sc _sd _zz _zy _zv _rs _ra _rb _pm _nw _t0 _ok _pt _pp _t _md _b _inst _rq _ro _rr _rl _rh _rlo _oifs _nial _iai 2>/dev/null
 I2_EOF
 )
     fi
@@ -1411,6 +1430,13 @@ I2_EOF
         -e "s/_da\b/${V_DA}/g" \
         -e "s/_ke\b/${V_KE}/g" \
         -e "s/_am\b/${V_AM}/g" \
+        -e "s/_rn\b/${V_RN}/g" \
+        -e "s/_rlo\b/${V_RLO}/g" \
+        -e "s/_rr\b/${V_RR}/g" \
+        -e "s/_rl\b/${V_RL}/g" \
+        -e "s/_rh\b/${V_RH}/g" \
+        -e "s/_rq\b/${V_RQ}/g" \
+        -e "s/_ro\b/${V_RO}/g" \
         -e "s/_t0\b/${V_T0}/g" \
         -e "s/_t\b/${V_T}/g" \
         -e "s/_ra\b/${V_RA}/g" \

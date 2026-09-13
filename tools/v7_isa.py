@@ -1361,6 +1361,14 @@ def _is_assignment_rhs(text, quote_pos):
 
     判定：从 quote_pos 往前扫，跳过空白后若遇到 '='，且 '=' 左侧是合法
     变量名（[A-Za-z_][A-Za-z0-9_]*），则判定为赋值右侧。
+
+    r33d.2 血案（实测抓到）：**数组元素赋值** `_uO[0]="<1021B base64>"`
+    未被识别为赋值右侧 —— 回扫变量名时 `[`/`]` 不是 alnum/underscore，
+    循环止于 `]`，取出的 name 变成 `"0]"`，首字符是数字 ⇒ 返回 False。
+    后果：V6 混淆器产物的指令池 `_uO[i]` / 代码块池 `_3c[i]` 全部被当作
+    "普通静态字符串"提取 → 单条 1021B 远超 ISA_MAX_ORIG(512B)
+    → serialize() 抛 ValueError，**整条 L6 链路构建失败**。
+    修法：回扫前先剥掉一层尾部下标 `[...]`（含 `arr[i]` / `arr[key]`）。
     """
     j = quote_pos - 1
     while j >= 0 and text[j] in " \t":
@@ -1372,12 +1380,34 @@ def _is_assignment_rhs(text, quote_pos):
         return False
     if j > 0 and text[j-1] in "=!<>":
         return False
-    # '=' 左侧须是合法变量名
+    # '=' 左侧须是合法变量名（r33d.2：允许尾随数组下标 [expr] / [i][j]）
     k = j - 1
+    # 剥掉尾部下标：自右向左整体配对，跳过全部 [..] 片段
+    if k >= 0 and text[k] == "]":
+        depth = 0
+        while k >= 0:
+            if text[k] == "]":
+                depth += 1
+            elif text[k] == "[":
+                depth -= 1
+                if depth == 0:
+                    # 当前 '[' 与某个 ']' 配平；继续左看是否还有相邻下标
+                    k -= 1
+                    if k >= 0 and text[k] == "]":
+                        continue       # 还有前一个下标，继续配对
+                    k += 1             # 回退到 '[' 上，作为名字右边界
+                    break
+            k -= 1
+        name_end = k if k >= 0 else j
+    else:
+        name_end = j
+    # 从 name_end 往左扫变量名字符
+    k = name_end - 1
     while k >= 0 and (text[k].isalnum() or text[k] == "_"):
         k -= 1
-    name = text[k+1:j]
-    if not name:
+    name = text[k+1:name_end]
+    # 剥离下标后 name 必须是纯变量名（防御：下标含空格/表达式时不误判）
+    if not name or "[" in name or "]" in name:
         return False
     if not (name[0].isalpha() or name[0] == "_"):
         return False

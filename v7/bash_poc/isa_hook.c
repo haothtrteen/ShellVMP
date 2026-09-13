@@ -432,7 +432,23 @@ v7_isa_translate_var (const char *name)
    修法：只在**词首**匹配，且要求别名整体构成一个合法 token ——
    右侧下一字符不得是 [A-Za-z0-9_]（否则是更长标识符的前缀，非别名）。
    别名自身已带 "v7p_" 前缀 + 10 位随机段（见 v7_isa.py），
-   两道防线叠加后，随机数据撞车概率可忽略。 */
+   两道防线叠加后，随机数据撞车概率可忽略。
+
+   r33e（真机/端到端血案）——**词首锚定过于激进，必须放宽到全词扫描**：
+   r17-1 的"只在词首"把误伤压住了，但**改错了方向**：改写器
+   （v7_isa.py rewrite_all）在**引号内的整段参数**里做子串替换，
+   即 `echo "/system/bin/sh /data/adb/m1"` → 整串 4 个 token 全被换；
+   而运行期只有词首那一个能还原（实测输出
+   `/system/bin/sh v7p_9z0hq01cwr/m1 v7p_snvowjitoo/f1`）——
+   **保护面在，语义全丢**（比崩更糟：静默输出错内容）。
+   判据：别名长 14 字符（`v7p_` + 10 位随机段），是 r17-1 时代的
+   4 字符的 3.5 倍；叠加上下文判据（左边界须是分隔符/词首、
+   右边界须非标识符字符）后，随机数据撞车概率仍在可忽略量级，
+   不足以支撑"牺牲正确性换防误伤"。
+   ⇒ 现行：**在词内任意位置扫描**，但左右边界判据一律保留。
+   ⇒ 教训：防误伤的锚定必须与**改写器的实际作用域**同宽；不是越窄越安全，
+     窄于改写域 = 静默语义破坏，比误伤更难发现（没有报错，只有错输出）。
+   反例证据：tools/isa_itest.py 的 l4_path 用例（本修复后转绿）。 */
 /* r32：v7_isa_translate_paths 的单步替换。
  * 【为什么是外部链接】同 v7_isa_param_crypt —— static+noinline 在 clang -O2
  * 下会被内联回调用者，函数体膨胀到 388 字节，而 VMPacker 对 >200 字节的
@@ -442,25 +458,56 @@ v7_isa_translate_var (const char *name)
  * 返回值：1 = 已替换（*out_new 为新串，调用方接管）
  *         0 = 本条规则未命中（继续下一条）
  *        -1 = 致命（真名为空 / malloc 失败），调用方 break（保持原语义） */
+/* 左边界判据：pos 处的别名前面必须是词首或分隔字符。
+ * 防的是"更长的别名尾巴"——例如另一条路径别名的后半段恰好与它同形。
+ * 分隔符集合按 shell 词法取保守值：空白 / 斜杠 / 引号 / 常见标点。 */
+static int
+v7_isa_left_boundary_ok (const char *cur, size_t pos)
+{
+    char p;
+
+    if (pos == 0)
+        return 1;
+    p = cur[pos - 1];
+    if (p == '_' || (p >= 'a' && p <= 'z') || (p >= 'A' && p <= 'Z')
+        || (p >= '0' && p <= '9'))
+        return 0;
+    return 1;
+}
+
 int
 v7_isa_path_step (const char *cur, int i, char **out_new)
 {
-    size_t alen, olen, wlen;
-    const char *o;
+    size_t alen, olen, wlen, pos;
+    const char *o, *hit;
     char *tmp, nxt;
 
     if (isa_tab[i].layer != 5)
       return 0;
     alen = strlen (isa_tab[i].alias);
-    /* 词首锚定：必须从 cur 的第 0 个字符开始 */
-    if (strncmp (cur, isa_tab[i].alias, alen) != 0)
+    if (alen == 0)
       return 0;
-    /* 右边界：别名后的下一字符不得是标识符字符（防前缀误配） */
-    nxt = cur[alen];
-    if (nxt == '_'
-        || (nxt >= 'a' && nxt <= 'z')
-        || (nxt >= 'A' && nxt <= 'Z')
-        || (nxt >= '0' && nxt <= '9'))
+    /* 全词扫描：找出第一个左右边界都成立的命中位置（r33e） */
+    hit = NULL;
+    for (pos = 0; cur[pos] != '\0'; pos++)
+      {
+        if (cur[pos] != isa_tab[i].alias[0])
+          continue;
+        if (strncmp (cur + pos, isa_tab[i].alias, alen) != 0)
+          continue;
+        if (!v7_isa_left_boundary_ok (cur, pos))
+          continue;
+        /* 右边界：别名后的下一字符不得是标识符字符（防前缀误配） */
+        nxt = cur[pos + alen];
+        if (nxt == '_'
+            || (nxt >= 'a' && nxt <= 'z')
+            || (nxt >= 'A' && nxt <= 'Z')
+            || (nxt >= '0' && nxt <= '9'))
+          continue;
+        hit = cur + pos;
+        break;
+      }
+    if (hit == NULL)
       return 0;
     o = isa_orig (i);                                  /* r20：走第二层 */
     if (o == NULL || (olen = strlen (o)) == 0)
@@ -469,8 +516,9 @@ v7_isa_path_step (const char *cur, int i, char **out_new)
     tmp = malloc (wlen + olen + 64);
     if (tmp == NULL)
       return -1;
-    memcpy (tmp, o, olen);
-    strcpy (tmp + olen, cur + alen);
+    memcpy (tmp, cur, (size_t) (hit - cur));
+    memcpy (tmp + (hit - cur), o, olen);
+    strcpy (tmp + (hit - cur) + olen, hit + alen);
     *out_new = tmp;
     return 1;
 }
