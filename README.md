@@ -247,6 +247,7 @@ ShellVMP/
 - **真机产物**未随仓库分发（体积 + 隐私）。
 - **产物运行期锁定 bash**（非语法限制，是密钥链把解释器语义烧进了密文）。跨 shell 的完整分析、功能剥离表与三档路线见 [`docs/GENERALIZATION_FEASIBILITY.md`](docs/GENERALIZATION_FEASIBILITY.md)。**注**：目标机无需装 bash —— `V7_SELF=1` 内嵌静态解释器即可跨平台运行。
 - **解释器兼容层（实验性）**：`tools/interp_compat/` 提供了给 dash 装 bash 兼容 `$RANDOM` 的补丁，实测与 bash 逐比特一致。但**仅靠它跑不通产物**（仍受语法层限制），详见 [`docs/INTERP_COMPAT_LAYER.md`](docs/INTERP_COMPAT_LAYER.md)。
+- **跨 shell 的外部方案已核查完毕**：社区同类工具（Babelfish / Reef / Rosetta-shell / Zshrs / zsh `emulate` 等）**均无法直接复用**，其中四条常见思路已被实测或事实排除。详见 [`docs/PRIOR_ART_REVIEW.md`](docs/PRIOR_ART_REVIEW.md)。
 
 ---
 
