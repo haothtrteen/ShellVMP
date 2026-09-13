@@ -1,0 +1,372 @@
+This file is v6openssl.def, from which is created v6openssl.c.
+It implements the builtin "openssl" in Bash (TShell r12, 重构版 r16-7).
+
+TShell —— V6 层密码学 builtin（重构版：改用系统 libcrypto/EVP 实现）：
+原版（v6openssl.def.old，28KB）在 bash 内手写 AES-256-CTR / PBKDF2-HMAC-SHA512 /
+HMAC-SHA256 / base64，实测与外部 openssl 存在行为分叉，导致 V6 产物在魔改 bash
+上密钥链断裂、静默退出。本重构版直接调用 libcrypto —— 与外部 openssl 二进制
+同库同源，结果天然逐字节一致；代码量从 28KB 缩到 ~6KB。
+
+覆盖 V6 模板（shell_script_obfuscator_v6.sh）运行期全部调用形态：
+  1) enc -aes-256-ctr -a -A -K HEX64 -iv HEX32        （item 级加/解密）
+  2) enc [-d] -aes-256-ctr -a -A -pbkdf2 -iter N -md sha512
+     [-S SALT16HEX] -pass pass:P                     （主载荷/passkey 包裹）
+  3) dgst -sha256 -hmac KEY                          （三明治 MAC）
+
+与 openssl 3.x CLI 行为对齐：
+  - 加密 + 显式 -S        ：输出纯密文 base64（不写 Salted__ 头，与 3.x 一致）
+  - 加密 无 -S            ：随机 8B salt，输出 "Salted__"+salt+ct 的 base64
+  - 解密 + Salted__ 头    ：剥头，salt 取头内 8B（-S 忽略）
+  - 解密 无头             ：salt = -S 值；无 -S → 失败 rc=1
+  - PBKDF2                ：RFC 2898 PBKDF2-HMAC-SHA512，dkLen=48（K32+IV16）
+  - dgst                  ：输出 "SHA2-256(stdin)= <hex>"（3.x 格式；V6 取 ${##* } 兼容）
+
+其余 openssl 子命令/选项一律拒绝（rc=1）：本 builtin 不是通用 openssl。
+链接：需 -lcrypto（静态分发用 libcrypto.a）。
+
+$PRODUCES v6openssl.c
+
+#include <config.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
+
+#include "../bashansi.h"
+#include "../shell.h"
+
+/* ============================ 工具函数 ============================ */
+
+static unsigned char *
+v6_read_stdin (size_t *nlen)
+{
+  size_t cap = 65536, len = 0, r;
+  unsigned char *buf, *nb;
+  buf = (unsigned char *) malloc (cap);
+  if (buf == NULL) return NULL;
+  for (;;)
+    {
+      if (len == cap)
+        {
+          cap *= 2;
+          nb = (unsigned char *) realloc (buf, cap);
+          if (nb == NULL) { free (buf); return NULL; }
+          buf = nb;
+        }
+      r = fread (buf + len, 1, cap - len, stdin);
+      if (r == 0) break;
+      len += r;
+    }
+  if (ferror (stdin)) { free (buf); return NULL; }
+  *nlen = len;
+  return buf;
+}
+
+static int
+v6_unhex (const char *h, unsigned char *out, size_t n)
+{
+  size_t i;
+  int hi, lo;
+  static const char *dig = "0123456789abcdef";
+  if (h == NULL || strlen (h) != n * 2) return -1;
+  for (i = 0; i < n; i++)
+    {
+      const char *p;
+      p = strchr (dig, tolower ((unsigned char) h[2 * i]));
+      if (p == NULL) return -1;
+      hi = (int) (p - dig);
+      p = strchr (dig, tolower ((unsigned char) h[2 * i + 1]));
+      if (p == NULL) return -1;
+      lo = (int) (p - dig);
+      out[i] = (unsigned char) ((hi << 4) | lo);
+    }
+  return 0;
+}
+
+/* base64 单行（= openssl enc -A）：EVP_EncodeBlock 无换行 */
+static char *
+v6_b64_encode (const unsigned char *in, size_t inlen, size_t *olen)
+{
+  int need;
+  char *out;
+  if (inlen == 0) { *olen = 0; out = (char *) malloc (1); if (out) out[0] = 0; return out; }
+  need = 4 * ((int) inlen / 3 + 1) + 4;
+  out = (char *) malloc ((size_t) need);
+  if (out == NULL) return NULL;
+  *olen = (size_t) EVP_EncodeBlock ((unsigned char *) out, in, (int) inlen);
+  return out;
+}
+
+static unsigned char *
+v6_b64_decode (const char *in, size_t inlen, size_t *olen)
+{
+  size_t tl;
+  int dl;
+  unsigned char *out;
+  const char *s = in;
+  /* 去掉可能存在的换行（健壮性；V6 恒为 -A 单行） */
+  while (inlen > 0 && (s[inlen - 1] == '\n' || s[inlen - 1] == '\r')) inlen--;
+  if (inlen == 0 || inlen % 4 != 0) return NULL;
+  tl = inlen / 4 * 3;
+  out = (unsigned char *) malloc (tl + 4);
+  if (out == NULL) return NULL;
+  dl = EVP_DecodeBlock (out, (const unsigned char *) s, (int) inlen);
+  if (dl < 0) { free (out); return NULL; }
+  /* EVP_DecodeBlock 不剥 '=' padding，手动扣除 */
+  while (inlen > 0 && s[inlen - 1] == '=') { dl--; inlen--; }
+  if (dl < 0) { free (out); return NULL; }
+  *olen = (size_t) dl;
+  return out;
+}
+
+/* ============================ builtin 主体 ============================ */
+
+$BUILTIN openssl
+$FUNCTION openssl_builtin
+$SHORT_DOC openssl enc|dgst [V6 子集]
+openssl（V6 子集 builtin，libcrypto/EVP 重构版）：仅支持 TShell V6 产物
+运行期所需的
+  enc [-d] -aes-256-ctr -a -A [-K HEX -iv HEX]
+      [-pbkdf2 -iter N -md sha512 [-S SALT] [-pass pass:P]]
+  dgst -sha256 -hmac KEY
+其余子命令返回失败。行为与 openssl 3.x CLI 逐字节对齐（同库实现）。
+$END
+
+int
+openssl_builtin (list)
+     WORD_LIST *list;
+{
+  char **v;
+  int argc = 0, ai;
+  WORD_LIST *l;
+  const char *sub = NULL;
+  /* ===== V6DIAG 调用日志（诊断插桩，定位后删除本块）===== */
+  { FILE *lf = fopen ("/tmp/v6oc.log", "a");
+    if (lf) { WORD_LIST *d; fprintf (lf, "call [pid %d]:", (int) getpid ());
+      for (d = list; d; d = d->next) fprintf (lf, " %s", d->word->word);
+      fprintf (lf, "\n"); fclose (lf); } }
+  /* enc 参数 */
+  int decrypt = 0, b64 = 0, pbkdf = 0, nosalt = 0;
+  long iter = 10000;
+  const char *khex = NULL, *ivhex = NULL, *salthex = NULL, *pass = NULL;
+  int md_is_512 = 0;
+  /* dgst 参数 */
+  const char *hmac_key = NULL;
+  int dgst_sha256 = 0;
+
+  for (l = list; l; l = l->next) argc++;
+  if (argc == 0) return EXECUTION_FAILURE;
+  v = (char **) malloc (sizeof (char *) * argc);
+  if (v == NULL) return EXECUTION_FAILURE;
+  for (ai = 0, l = list; l; l = l->next, ai++) v[ai] = l->word->word;
+
+  sub = v[0];
+  if (strcmp (sub, "enc") == 0)
+    {
+      unsigned char key[32], iv[16], salt[8];
+      unsigned char *in = NULL;
+      size_t inlen = 0;
+
+      for (ai = 1; ai < argc; ai++)
+        {
+          const char *a = v[ai];
+          if (strcmp (a, "-d") == 0) decrypt = 1;
+          else if (strcmp (a, "-e") == 0) decrypt = 0;
+          else if (strcmp (a, "-aes-256-ctr") == 0) ;
+          else if (strcmp (a, "-a") == 0) b64 = 1;
+          else if (strcmp (a, "-A") == 0) ;
+          else if (strcmp (a, "-nosalt") == 0) nosalt = 1;
+          else if (strcmp (a, "-salt") == 0) ;
+          else if (strcmp (a, "-pbkdf2") == 0) pbkdf = 1;
+          else if (strcmp (a, "-iter") == 0)
+            { if (++ai >= argc) goto enc_fail; iter = atol (v[ai]); if (iter < 1) goto enc_fail; }
+          else if (strcmp (a, "-md") == 0)
+            { if (++ai >= argc) goto enc_fail;
+              if (strcmp (v[ai], "sha512") == 0) md_is_512 = 1;
+              else goto enc_fail; }
+          else if (strcmp (a, "-K") == 0)
+            { if (++ai >= argc) goto enc_fail; khex = v[ai]; }
+          else if (strcmp (a, "-iv") == 0)
+            { if (++ai >= argc) goto enc_fail; ivhex = v[ai]; }
+          else if (strcmp (a, "-S") == 0)
+            { if (++ai >= argc) goto enc_fail; salthex = v[ai]; }
+          else if (strcmp (a, "-pass") == 0)
+            { if (++ai >= argc) goto enc_fail;
+              if (strncmp (v[ai], "pass:", 5) == 0) pass = v[ai] + 5;
+              else goto enc_fail; }
+          else goto enc_fail;
+        }
+      if (b64 == 0) goto enc_fail;                /* V6 恒为 -a -A */
+      if (pbkdf == 0)
+        {
+          /* ===== item 级：显式 -K/-iv，CTR，无 salt ===== */
+          EVP_CIPHER_CTX *c;
+          unsigned char *raw, *ctrb, *b64b;
+          int outl = 0, outl2 = 0, enc = decrypt ? 0 : 1;
+          size_t rawlen = 0, blen = 0;
+
+          if (khex == NULL || ivhex == NULL) goto enc_fail;
+          if (strlen (khex) != 64 || strlen (ivhex) != 32) goto enc_fail;
+          if (v6_unhex (khex, key, 32) != 0) goto enc_fail;
+          if (v6_unhex (ivhex, iv, 16) != 0) goto enc_fail;
+          in = v6_read_stdin (&inlen);
+          if (in == NULL) goto enc_fail;
+          if (decrypt)
+            {
+              raw = v6_b64_decode ((const char *) in, inlen, &rawlen);
+              if (raw == NULL) goto enc_fail;
+            }
+          else
+            { raw = in; rawlen = inlen; in = NULL; }
+
+          c = EVP_CIPHER_CTX_new ();
+          if (c == NULL) goto enc_fail;
+          ctrb = (unsigned char *) malloc (rawlen + 32);
+          if (ctrb == NULL) { EVP_CIPHER_CTX_free (c); goto enc_fail; }
+          if (EVP_CipherInit_ex (c, EVP_aes_256_ctr (), NULL, key, iv, enc) != 1 ||
+              EVP_CipherUpdate (c, ctrb, &outl, raw, (int) rawlen) != 1 ||
+              EVP_CipherFinal_ex (c, ctrb + outl, &outl2) != 1)
+            { EVP_CIPHER_CTX_free (c); free (ctrb); goto enc_fail; }
+          EVP_CIPHER_CTX_free (c);
+          blen = (size_t) outl + (size_t) outl2;
+
+          if (decrypt)
+            { fwrite (ctrb, 1, blen, stdout); free (ctrb); free (raw); }
+          else
+            {
+              b64b = v6_b64_encode (ctrb, blen, &blen);
+              free (ctrb);
+              if (b64b == NULL) goto enc_fail;
+              fwrite (b64b, 1, blen, stdout);
+              free (b64b); free (raw);
+            }
+          fflush (stdout);
+          free (in);
+          free (v);
+          return EXECUTION_SUCCESS;
+        }
+      /* ===== pbkdf2 路径（必须 -md sha512 + -pass pass:P） ===== */
+      if (md_is_512 == 0 || pass == NULL) goto enc_fail;
+      if (salthex != NULL && strlen (salthex) != 16) goto enc_fail;
+      in = v6_read_stdin (&inlen);
+      if (in == NULL) goto enc_fail;
+      {
+        EVP_CIPHER_CTX *c;
+        unsigned char dk[48];
+        unsigned char *raw = NULL, *body = NULL, *ctrb, *b64b;
+        size_t bodylen = 0, rawlen = 0, blen = 0;
+        int outl = 0, outl2 = 0, enc = decrypt ? 0 : 1;
+        int rc = EXECUTION_FAILURE;
+
+        if (decrypt)
+          {
+            raw = v6_b64_decode ((const char *) in, inlen, &rawlen);
+            if (raw == NULL) goto pbkdf_end;
+            if (rawlen >= 16 && memcmp (raw, "Salted__", 8) == 0)
+              { memcpy (salt, raw + 8, 8); body = raw + 16; bodylen = rawlen - 16; }
+            else if (salthex != NULL)
+              { if (v6_unhex (salthex, salt, 8) != 0) goto pbkdf_end;
+                body = raw; bodylen = rawlen; }
+            else goto pbkdf_end;    /* openssl：无头无 -S = bad decrypt */
+          }
+        else
+          {
+            if (salthex != NULL)
+              { if (v6_unhex (salthex, salt, 8) != 0) goto pbkdf_end;
+                body = in; bodylen = inlen; }
+            else
+              {
+                unsigned char *tmp;
+                if (RAND_bytes (salt, 8) != 1) goto pbkdf_end;
+                tmp = (unsigned char *) malloc (inlen + 16);
+                if (tmp == NULL) goto pbkdf_end;
+                memcpy (tmp, "Salted__", 8);
+                memcpy (tmp + 8, salt, 8);
+                memcpy (tmp + 16, in, inlen);
+                body = tmp; bodylen = inlen + 16;
+                raw = tmp;              /* 统一由 raw 释放 */
+              }
+          }
+        if (PKCS5_PBKDF2_HMAC (pass, (int) strlen (pass), salt, 8, (int) iter,
+                               EVP_sha512 (), 48, dk) != 1) goto pbkdf_end;
+        memcpy (key, dk, 32); memcpy (iv, dk + 32, 16);
+
+        c = EVP_CIPHER_CTX_new ();
+        if (c == NULL) goto pbkdf_end;
+        ctrb = (unsigned char *) malloc (bodylen + 32);
+        if (ctrb == NULL) { EVP_CIPHER_CTX_free (c); goto pbkdf_end; }
+        if (EVP_CipherInit_ex (c, EVP_aes_256_ctr (), NULL, key, iv, enc) != 1 ||
+            EVP_CipherUpdate (c, ctrb, &outl, body, (int) bodylen) != 1 ||
+            EVP_CipherFinal_ex (c, ctrb + outl, &outl2) != 1)
+          { EVP_CIPHER_CTX_free (c); free (ctrb); goto pbkdf_end; }
+        EVP_CIPHER_CTX_free (c);
+        blen = (size_t) outl + (size_t) outl2;
+
+        if (decrypt)
+          fwrite (ctrb, 1, blen, stdout);
+        else
+          {
+            b64b = v6_b64_encode (ctrb, blen, &blen);
+            if (b64b == NULL) { free (ctrb); goto pbkdf_end; }
+            fwrite (b64b, 1, blen, stdout);
+            free (b64b);
+          }
+        free (ctrb);
+        fflush (stdout);
+        rc = EXECUTION_SUCCESS;
+
+      pbkdf_end:
+        if (raw) free (raw);
+        if (decrypt && body && raw == NULL) free (body);
+        free (in);
+        free (v);
+        return rc;
+      }
+
+    enc_fail:
+      free (in);
+      free (v);
+      return EXECUTION_FAILURE;
+    }
+
+  if (strcmp (sub, "dgst") == 0)
+    {
+      unsigned char *in;
+      size_t inlen;
+      unsigned char mac[EVP_MAX_MD_SIZE];
+      unsigned int maclen = 0;
+      int i;
+      for (ai = 1; ai < argc; ai++)
+        {
+          const char *a = v[ai];
+          if (strcmp (a, "-sha256") == 0) dgst_sha256 = 1;
+          else if (strcmp (a, "-hmac") == 0)
+            { if (++ai >= argc) return EXECUTION_FAILURE; hmac_key = v[ai]; }
+          else if (strcmp (a, "-hex") == 0) ;
+          else if (strcmp (a, "-r") == 0) ;
+          else return EXECUTION_FAILURE;
+        }
+      if (dgst_sha256 == 0 || hmac_key == NULL) return EXECUTION_FAILURE;
+      in = v6_read_stdin (&inlen);
+      if (in == NULL) return EXECUTION_FAILURE;
+      if (HMAC (EVP_sha256 (), hmac_key, (int) strlen (hmac_key), in, inlen,
+                mac, &maclen) == NULL)
+        { free (in); free (v); return EXECUTION_FAILURE; }
+      /* 对齐 openssl 3.x CLI 输出："SHA2-256(stdin)= <hex>"；V6 取 ${##* } 兼容 */
+      fputs ("SHA2-256(stdin)= ", stdout);
+      for (i = 0; i < (int) maclen; i++) fprintf (stdout, "%02x", mac[i]);
+      fputc ('\n', stdout);
+      fflush (stdout);
+      free (in);
+      free (v);
+      return EXECUTION_SUCCESS;
+    }
+
+  free (v);
+  return EXECUTION_FAILURE;
+}

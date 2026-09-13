@@ -1,0 +1,37 @@
+MIT License
+
+Copyright (c) 2026 ShellVMP Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+DISCLAIMER / 免责声明
+
+This project is intended for DEFENSIVE security research and for protecting
+software that you own or are authorized to protect.
+
+本项目是防御性安全研究工具，用于保护你自己拥有或获授权保护的代码。
+
+The authors are not responsible for any misuse, including but not limited to
+using this tool to conceal malicious code, evade security analysis of systems
+you do not own, or violate any applicable law.
+
+作者不对任何滥用行为负责，包括但不限于：用本工具隐藏恶意代码、规避对非自有
+系统的安全分析、或违反任何适用法律。

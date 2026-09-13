@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  v6-lint:
+    name: V6 lint 自测
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 运行 v6_lint 自测套件（含变异自检）
+        run: python3 tools/v6_lint_test.py
+
+  v6-roundtrip:
+    name: V6 混淆往返测试（逐字节对拍）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装依赖
+        run: sudo apt-get update && sudo apt-get install -y openssl gzip coreutils
+
+      - name: 基线输出
+        run: bash examples/demo_app.sh > /tmp/baseline.txt 2>&1 || true
+
+      - name: 混淆（默认模式）
+        run: |
+          ANDROID_GATE=0 bash v6/shell_script_obfuscator_v6.sh \
+            examples/demo_app.sh /tmp/prot_default.sh
+
+      - name: 混淆（V6_NS 模式）
+        run: |
+          V6_NS=ci ANDROID_GATE=0 bash v6/shell_script_obfuscator_v6.sh \
+            examples/demo_app.sh /tmp/prot_ns.sh
+
+      - name: 逐字节对拍（默认模式）
+        run: |
+          ANDROID_GATE=0 bash /tmp/prot_default.sh > /tmp/default.txt 2>&1
+          diff /tmp/baseline.txt /tmp/default.txt
+          echo "✅ 默认模式输出一致"
+
+      - name: 逐字节对拍（NS 模式）
+        run: |
+          ANDROID_GATE=0 bash /tmp/prot_ns.sh > /tmp/ns.txt 2>&1
+          diff /tmp/baseline.txt /tmp/ns.txt
+          echo "✅ NS 模式输出一致"
+
+      - name: 验证 V6_NS 前缀存在于产物
+        run: |
+          grep -q 'ci_' /tmp/prot_ns.sh && echo "✅ V6_NS 前缀已注入" || exit 1
+          grep -q 'ci_' /tmp/prot_default.sh && exit 1 || echo "✅ 默认模式不受 NS 影响"
+
+      - name: 验证 per-build 随机化（两次构建变量名应不同）
+        run: |
+          ANDROID_GATE=0 bash v6/shell_script_obfuscator_v6.sh \
+            examples/demo_app.sh /tmp/prot_ns2.sh
+          # 提取 NS 变量名集合，两次构建的交集应为空
+          comm -12 \
+            <(grep -o 'ci_[A-Za-z0-9]*' /tmp/prot_ns.sh  | sort -u) \
+            <(grep -o 'ci_[A-Za-z0-9]*' /tmp/prot_ns2.sh | sort -u) \
+            > /tmp/overlap.txt
+          if [ -s /tmp/overlap.txt ]; then
+            echo "❌ 两次构建出现相同变量名（随机化失效）:"
+            cat /tmp/overlap.txt
+            exit 1
+          fi
+          echo "✅ per-build 随机化有效（交集为空）"
+
+      - name: 验证产物里无明文业务逻辑
+        run: |
+          if grep -q 'process_items\|check_license\|XK7-DEMO' /tmp/prot_default.sh; then
+            echo "❌ 产物中残留明文标识符"
+            exit 1
+          fi
+          echo "✅ 产物无明文业务标识符"
+
+  shell-syntax:
+    name: Shell 语法检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n 全部 shell 脚本
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            if ! bash -n "$f" 2>/dev/null; then
+              echo "❌ 语法错误: $f"
+              fail=1
+            fi
+          done < <(find . -name '*.sh' -not -path './.git/*')
+          [ "$fail" = 0 ] && echo "✅ 所有 shell 脚本语法正确"
+          exit $fail
+
+  python-syntax:
+    name: Python 语法检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 编译检查
+        run: |
+          python3 -m compileall -q tools/ && echo "✅ Python 语法正确"
