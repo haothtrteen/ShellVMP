@@ -129,8 +129,9 @@ Flutter release 产物：
 | 档位 | 内容 | 工作量 | 建议 |
 |---|---|---|---|
 | **P0** | 产品化：`V7_SELF=1` 转正 + 输入面体检工具 + README 边界 | **半天** | ⭐⭐⭐⭐⭐ 直击真实痛点 |
-| P3 | dash-only 子集 PoC（放弃 zsh，含止损点） | 3-5 天 | ⭐⭐ 边际收益有限 |
-| P5 | 完整跨 shell（dash+ash+mksh+zsh） | 2-4 周 | ⭐ 不划算 |
+| **P0b** | **mksh-only PoC（Android 真靶子，含止损点）** | **1-2 天** | ⭐⭐⭐⭐ **直击 Android** |
+| P3 | dash 子集 PoC（成本最高，服务器场景） | 3-5 天 | ⭐⭐ 边际收益有限 |
+| P5 | 完整跨 shell（mksh+dash+ash） | 2-4 周 | ⭐ 不划算（zsh 不做） |
 
 **关键认知**：用户感知的"只能保护 bash"里，约 **80% 已经解决** —— `V7_SELF=1` 内嵌静态 bash 让产物跨平台（aarch64 bionic/musl + x86_64 全覆盖），且 `v7_wrap.sh` 本身就是 `#!/bin/sh`（外层载体已是纯 POSIX）。缺的是"写成默认路径 + 把边界说诚实"。
 
@@ -165,6 +166,37 @@ Flutter release 产物：
 2. **`lint` 式静态检查** —— 扫描产物、列出全部非 POSIX 构造及行号，只报告不自动修，补上 `v6_lint.py` 现在缺的这块。
 
 **一条方法论确认**：已废弃的 `bash2zsh-complete` 失败原因是「bash 构造太多、无法穷尽支持」。映射到我们 —— **不要做通用 bash→sh 转译器，只降级我们自己产物里出现的那个有限构造集**。这正是功能剥离表的思路。
+
+### 5.2b 靶子修正：Android 是 mksh，不是 dash（重要）
+
+> 完整调研见 [`SHELL_TARGETS.md`](SHELL_TARGETS.md)。
+
+**意外发现：ShellVMP 的目标平台是 Android，而 Android 的系统 shell 是 mksh，不是 dash。**
+
+按 Android 官方 `shell_and_utilities/README.md`：**Android 4.0（ICS）起 `/system/bin/sh` 就是 mksh**（MirBSD Korn Shell），5.0 起 ash 已从树中移除。设备实测 `$KSH_VERSION` = `@(#)MIRBSD KSH R55`。
+
+**这意味着原「档位 2：dash-only PoC」瞄错了靶子。** 而且——**mksh 的兼容性远好于 dash**：
+
+| 构造 | bash | **mksh** | dash | zsh |
+|---|---|---|---|---|
+| 真数组 `a=(1 2 3)` | ✅ | ✅ | ❌ | ✅ |
+| `[[ ]]` | ✅ | ✅ | ❌ | ✅ |
+| `<<<` here-string | ✅ | ✅ | ❌ | ✅ |
+| `${var//x/y}` | ✅ | ✅ | ❌ | ✅ |
+| `${a[0]}` 下标 | ✅ | ✅ | ✅ | ✅ |
+| `declare -a` | ✅ | ❌ | ❌ | ❌ |
+| `for ((;;))` | ✅ | ❌ | ❌ | ❌ |
+| `<(…)` 进程替换 | ✅ | ❌ | ❌ | ❌ |
+
+**mksh 只差 4 个构造，dash 差一整片。** 实测真实产物：mksh 只报 2 类错（`declare` + `for ((`），改掉后**语法层全过**；dash 则是满屏 `Bad substitution`。
+
+**且在 mksh 上必须改生成器而非产物**：解释器函数是产物用 `eval` 展开的，文本替换够不到（骨架里的 `declare -a`/`for ((` 能替换，`eval` 载荷里的 `<(…)` 不能）。
+
+**同时确认：zsh 不做。** zsh 是**交互 shell 不是脚本 shell** —— JetBrains 2025 显示 62% 开发者用 zsh 作交互 shell，但 CNCF 2025 显示 **94% 的 CI/CD 用 bash**，"zsh 在生产基础设施中≈0"。我们兼容的是**脚本运行环境**，zsh 在这个维度份额接近零。
+
+> **修正后的优先级**：**mksh（P0，Android 真靶子）→ bash（已完成）→ dash（P2，成本最高）→ busybox ash（P3）→ zsh（不做）**。
+>
+> **止损点更新**：原「dash-only PoC」改为 **「mksh-only PoC」** —— 判断标准是**产物在 mksh 下跑通第一个块**。
 
 ### 5.3 第 2 层语法审计（r23 实测，推翻悲观估计）
 
