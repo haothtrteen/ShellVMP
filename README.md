@@ -286,8 +286,9 @@ ShellVMP/
 不必逐个手写。可行性、三条自动识别规则、以及自动化**做不到**的边界，
 见 **[`docs/GENERIC_HOOK_DESIGN.md`](docs/GENERIC_HOOK_DESIGN.md)**。
 
-> 规则 1（保留字表自动发现）**已实现并验证** ——
-> `tools/hook_discover/discover_tables.py` 能自动找出
+> 规则 1（保留字表自动发现）**已实现并验证** —— 已抽出为子仓库
+> `../sh-hook/`（「sh 通用 hook 点 —— 便捷快速移植不同 sh 解释器的特性」），
+> 其 `discover_tables.py` 能自动找出
 > bash 的 `word_token_alist`、mksh 的 `tokentab`、dash 的 `parsekwd`。
 
 ---

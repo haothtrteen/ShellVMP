@@ -350,10 +350,17 @@ ROLE_MAP = {
 
 ## 八、进展：规则 1 已实现并验证（2026-09）
 
-**已落地**：`tools/hook_discover/discover_tables.py` + `tests/test_hook_discover.sh`
+> **迁移注记（2026-09）**：发现器已与表驱动插桩引擎一起**抽出为独立子仓库
+> `sh-hook`**（「sh 通用 hook 点 —— 便捷快速移植不同 sh 解释器的特性」），
+> 位于本仓库同级目录 `../sh-hook/`。下文 `tools/hook_discover/` 路径已由
+> `../sh-hook/discover_tables.py` 取代；`tests/test_hook_discover.sh` 改为
+> 指向子仓库，缺仓库时 SKIP。引擎部分出自 `v7/bash_poc/isa_hook.py` 的
+> B0 表驱动重构，bash/mksh 锚点集仍留存本仓库 `v7/bash_poc/anchors.py`。
+
+**已落地**：`../sh-hook/discover_tables.py` + `tests/test_hook_discover.sh`
 
 ```sh
-python3 tools/hook_discover/discover_tables.py \
+python3 ../sh-hook/discover_tables.py \
     <bash源码> <mksh源码> <dash源码>
 
 # 实测输出：

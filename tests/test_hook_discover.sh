@@ -4,13 +4,16 @@
 # 验证 discover_tables.py 能自动找到三个解释器的保留字表。
 # 这是"通用 hook 点"方案（docs/GENERIC_HOOK_DESIGN.md 规则 1）的可执行证据。
 #
+# 发现器已迁出为兄弟仓库 sh-hook（「sh 通用 hook 点」子项目），本测试
+# 指向 ../sh-hook/discover_tables.py；仓库未检出时整体 SKIP 而非 FAIL。
+#
 # 找不到某个 shell 的源码树 → SKIP（不 FAIL）：本测试不该因为开发者机器上
 # 没放源码而变红。可用环境变量指定：
 #   BASH_SRC_DIR / MKSH_SRC_DIR / DASH_SRC_DIR
 set -u
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$SELF_DIR/.." && pwd)"
-TOOL="$REPO/tools/hook_discover/discover_tables.py"
+TOOL="$REPO/../sh-hook/discover_tables.py"
 
 BASH_SRC_DIR="${BASH_SRC_DIR:-/tmp/v7test/bash-5.2}"
 MKSH_SRC_DIR="${MKSH_SRC_DIR:-/tmp/v7test/mksh-mksh-R59c}"
@@ -24,7 +27,9 @@ skip() { echo "  SKIP $1"; SKIP=$((SKIP+1)); }
 echo "== 保留字表发现器 =="
 
 if [ ! -f "$TOOL" ]; then
-    bad "tool-missing"; echo "RESULT: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"; exit 1
+    skip "discover_tables.py (兄弟仓库 sh-hook 未检出: $TOOL)"
+    echo "RESULT: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
+    exit 0
 fi
 python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$TOOL" \
     && ok "syntax" || bad "syntax"
