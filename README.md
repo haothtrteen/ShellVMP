@@ -280,6 +280,16 @@ ShellVMP/
 见 **[`docs/C_LAYER_ROUTE_COMPARE.md`](docs/C_LAYER_ROUTE_COMPARE.md)**（结论：先做通用补丁，
 拿 mksh 当第二个实例逼出抽象，止损点设在 mksh 的定长 `ident` 缓冲区）。
 
+### 「一次写、到处插」能做到什么程度
+
+不同 shell 的同类逻辑**在结构上高度同构**，可以靠"语义锚点 + 自动发现"自动适配，
+不必逐个手写。可行性、三条自动识别规则、以及自动化**做不到**的边界，
+见 **[`docs/GENERIC_HOOK_DESIGN.md`](docs/GENERIC_HOOK_DESIGN.md)**。
+
+> 规则 1（保留字表自动发现）**已实现并验证** ——
+> `tools/hook_discover/discover_tables.py` 能自动找出
+> bash 的 `word_token_alist`、mksh 的 `tokentab`、dash 的 `parsekwd`。
+
 ---
 
 ## License
