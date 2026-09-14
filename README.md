@@ -249,19 +249,32 @@ ShellVMP/
   - **为什么是 mksh**：Android 4.0+ 的 `/system/bin/sh` 就是 **mksh**（不是 dash）。这才是真靶子。
   - **验收门禁**：`sh tools/sh_compat_check.sh <产物.sh> [原始脚本.sh]`
   - 改动清单与"计划外四大真凶"（`$RANDOM` / `$-` / `$_` / `read -a`）见 [`docs/SHELL_TARGETS.md`](docs/SHELL_TARGETS.md) 第九节。
-- **dash 仍未支持（P2）**：dash **完全没有数组**（`_mx=; _mx[0]="abc"` → `Bad substitution`），mksh 用的 `declare -a X` → `X=` 这一招对 dash 不够，需要额外的标量模拟层。
-- **zsh 明确不做**：zsh 是交互 shell 不是脚本 shell（62% 交互份额，但 CI/CD 里 ≈0）。决策与重启条件见 [`docs/BACKLOG.md`](docs/BACKLOG.md)。
+- **dash 解释器路线冻结**：V6 产物跑 dash 需要标量仿真层（dash 完全没有数组）。但注意定位：这只影响"产物必须由 dash 解释"的场景——dash 来源的脚本本身是 POSIX 子集，直接进 bash 链即可；V7 线产物自带解释器，不受影响。
+- **zsh 解释器不做；zsh 来源脚本走收敛审计**：zsh 作为解释器不适配（交互 shell，生产脚本环境份额 ≈0，决策见 [`docs/BACKLOG.md`](docs/BACKLOG.md)）。但 zsh 来源的脚本可以通过**语义审计降级**进 bash 链保护——重点审计项：**数组 1-based（bash 0-based）**、`$arr` 展开语义、默认无 word splitting。跨方言收敛审计器（bash/mksh/dash/zsh → bash 子集，**审计报告 + 受限降级，拒绝静默自动翻译**）是当前计划中的工具。
 - **解释器兼容层（已被取代，保留作历史）**：`tools/interp_compat/` 原方案是给 dash 打 C 补丁装 bash 兼容 `$RANDOM`。现已被**纯算术内联 PRNG**（`_rn()`，三 shell 逐位一致、零依赖）取代 —— 无需改任何 shell 源码。详见 [`docs/INTERP_COMPAT_LAYER.md`](docs/INTERP_COMPAT_LAYER.md) 顶部的状态更新。
 - **跨 shell 的外部方案已核查完毕**：社区同类工具（Babelfish / Reef / Rosetta-shell / Zshrs / zsh `emulate` / `libdash` 等）**均无法直接复用**，其中五条常见思路已被实测或事实排除。详见 [`docs/PRIOR_ART_REVIEW.md`](docs/PRIOR_ART_REVIEW.md)。
 
-### 产物能在哪些 shell 上跑（实测矩阵）
+### 兼容性怎么读（先分清三个不同的问题）
+
+"支持哪些 shell"不是一个问题，是**三个独立的问题**。混在一起说，就会得出错误的预期：
+
+| 问题 | 现状 |
+|---|---|
+| ① **源脚本是什么方言**（你拿什么进来保护） | bash ✅ 原生；POSIX / dash ✅ 子集直接收；mksh ⚠️ 接近（4 个构造 + 4 处语义分叉，清单见 [`docs/SHELL_TARGETS.md`](docs/SHELL_TARGETS.md)）；zsh ⚠️ 需语义审计降级（**数组 1-based**、word splitting 等，审计器制作中） |
+| ② **产物由谁执行**（目标环境靠哪个解释器跑） | **V7 线：产物自带内嵌静态 bash（`V7_SELF=1`）→ 不依赖目标环境装了什么 shell**，任何能跑 ELF 的 Linux / Android 都行。V6 线：靠环境的 shell，见下方实测矩阵 |
+| ③ **要不要 C 层插桩**（V7-ISA 魔改解释器） | 补丁已随本仓库分发、构建脚本齐全，**对使用者透明**。bash-5.2 生产链 ✅；mksh L3 锚点已验证（试验性，翻译调用未实装）；其余冻结（自动发现工具链抽为子仓库 `sh-hook/`） |
+
+> **一句话**：如果你接受默认形态——产物**内嵌解释器分发**——那么 bash / POSIX / dash / mksh / zsh 来源的脚本（经收敛审计）都能保护，产物跑在**任何** Linux / Android 上，**目标环境装什么 shell 与你无关**。
+> 只有当你要求产物必须用目标环境的系统 shell 执行（例如 Android `/system/bin/mksh`，省去内嵌解释器的几 MB 体积）时，才需要关心下面这张矩阵。
+
+### V6 产物 × 环境 shell（实测矩阵）
 
 | shell | V6 产物 | 说明 |
 |---|---|---|
 | **bash** | ✅ 完整 | 原生目标，输出与明文逐字节一致 |
-| **mksh** | ✅ 完整 | 原生目标（Android `/system/bin/sh` 就是它），输出与 bash 逐字节一致 |
-| dash | ❌ | V6 产物用数组下标，dash 直接报错；需标量仿真层 |
-| zsh | ❌ | `assignment to invalid subscript range`；已明确不做 |
+| **mksh** | ✅ 完整 | 与 bash 输出逐字节一致（8 轮独立生成 8/8 通过），**零 C 补丁**——纯生成器侧改写 |
+| dash | ❌ | V6 产物用数组下标，dash 直接报错；需标量仿真层（冻结，见已知限制） |
+| zsh | ❌ | `assignment to invalid subscript range`；解释器路线不做 |
 
 > **"天然原生兼容 bash / mksh" 这句话，只对纯脚本线成立。**
 > VMP bash 线额外要求宿主能带自控 bash 二进制；ELF 线不依赖 C 层但**放弃 VMP 令牌化**。
@@ -269,7 +282,8 @@ ShellVMP/
 
 ### 自己编译各 shell 的 C 层补丁
 
-要把同一套 C 层补丁挂到不同解释器上（bash 已通、mksh 已通），
+V7-ISA 的 C 层补丁（bash 生产链已通；mksh 已完成 L3 锚点定位与编译验证，
+翻译调用未实装——状态以 [`v7/bash_poc/anchors.py`](v7/bash_poc/anchors.py) 为准），
 逐条注入步骤、三个 Android libc 线的取舍、以及踩过的坑全部整理在
 **[`docs/BUILD_PER_SHELL.md`](docs/BUILD_PER_SHELL.md)**。
 
@@ -290,6 +304,11 @@ ShellVMP/
 > `../sh-hook/`（「sh 通用 hook 点 —— 便捷快速移植不同 sh 解释器的特性」），
 > 其 `discover_tables.py` 能自动找出
 > bash 的 `word_token_alist`、mksh 的 `tokentab`、dash 的 `parsekwd`。
+>
+> **定位说明（2026-09）**：主产品路线是**脚本侧收敛**（审计 + 降级到 bash 子集 +
+> 内嵌解释器分发），解释器插桩线降级为 P3 优化——只在"产物必须用目标系统 shell
+> 执行以省体积"的场景才有必要。探索/重启该线时，sh-hook 的 G1-G3（表发现 →
+> 引用图谱 → 主路径探针）就是现成的地基。
 
 ---
 
