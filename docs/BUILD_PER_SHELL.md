@@ -292,7 +292,8 @@ sed -n '/^__V7_PAYLOAD_BEGIN__$/,/^__V7_PAYLOAD_END__$/{/^__V7_PAYLOAD/d;p;}' f 
 
 ## 八、已知边界（与构建无关，但会撞上）
 
-- **≥10 块脚本静默 `exit 1`**：独立于 shell 的既有项（`docs/BACKLOG.md` §二）。
+- **≥10 块脚本静默 `exit 1`**：**设计行为**（防错误码逆推，毒化 > 报警；
+  归类说明见 `docs/BACKLOG.md` §二），不是缺陷。
   9 块及以下实测与 plaintext 输出**逐字节一致**。
 - **dash / zsh 不支持**：V6 产物用数组下标（`_nW[0]=...`），dash 报
   `cannot open`/rc=2，zsh 报 `assignment to invalid subscript range`。需标量-数组

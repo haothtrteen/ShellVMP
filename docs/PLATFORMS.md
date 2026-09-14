@@ -89,8 +89,8 @@ S01 begin / S02 obfuscator / S03 信号=0 / S04 a,b,c / S05 has "quotes" and $va
 S06 end / power by haothtrteen / T33 done / over
 ```
 
-> **已知边界**：≥10 块的脚本会静默 `exit 1`（独立于 shell 的既有项，
-> 见 [`BACKLOG.md`](BACKLOG.md) §二）；9 块及以下逐字节一致。
+> **已知边界**：≥10 块的脚本会静默 `exit 1` —— 这是**设计行为**（防错误码
+> 逆推，毒化 > 报警，见 [`BACKLOG.md`](BACKLOG.md) §二）；9 块及以下逐字节一致。
 
 ---
 
@@ -99,4 +99,3 @@ S06 end / power by haothtrteen / T33 done / over
 - [ ] shebang 自适应做进 V6 流程（§3）—— V6 内部改造
 - [ ] APK 内嵌 bash 的发布形态（体积、ABI 拆分、签名）
 - [ ] dash / busybox ash 的标量-数组仿真层（P2，可能顺带修 busybox）
-- [ ] ≥10 块静默 `exit 1` 的根因闭环（`BACKLOG.md` §二）
