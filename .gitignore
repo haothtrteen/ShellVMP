@@ -15,6 +15,10 @@ work/
 build/
 dist/
 
+# 构建工具产物（由 v7/blobgen.c 编译而来，随构建自动生成）
+v7/blobgen
+v7/.blobgen.stamp
+
 # V6/V7 中间产物
 .demo/
 *.tmp
