@@ -12,7 +12,12 @@
 │ 自动扫"保留字表"形态   │   表名                │ 查表函数/宏/容器链/    │
 └──────────────────────┘                      │ 调用点引用图谱（G2）   │
                                               └──────────┬───────────┘
-                                                         ▼ 人工/探针确认主路径
+                                                         ▼ 候选
+                                              ┌──────────────────────┐
+                                              │ probe_path.py（G3）  │
+                                              │ 自动探针裁决主路径     │
+                                              └──────────┬───────────┘
+                                                         ▼ 确认主路径
                                               ┌──────────────────────┐
                                               │ 写成锚点表            │
                                               └──────────┬───────────┘
@@ -38,7 +43,13 @@ python3 discover_tables.py /path/to/dash-0.5.12/src
 python3 discover_callers.py /path/to/dash-0.5.12/src --from-g1
 #   或手动指定表：python3 discover_callers.py <目录> --table parsekwd
 
-# 3. 确认主路径后，写锚点表（格式见 examples/anchors_example.py）
+# 3. 拿不准哪个候选在主执行路径？让探针替你裁决：
+#    自动插桩 → 增量构建 → 跑探针脚本 → 报告命中/未命中
+python3 probe_path.py --srcdir /path/to/dash-0.5.12/src \
+    --build-cmd "make" --shell /path/to/dash-0.5.12/src/dash
+#   表名省略 --table 时自动跑 G1；--json 输出机器可解析结果
+
+# 4. 确认主路径后，写锚点表（格式见 examples/anchors_example.py）
 python3 hook_engine.py examples/anchors_example.py --list
 python3 hook_engine.py examples/anchors_example.py --srcdir <源码树> --dry-run
 python3 hook_engine.py examples/anchors_example.py --srcdir <源码树>
@@ -71,6 +82,22 @@ python3 hook_engine.py examples/anchors_example.py --srcdir <源码树>
 发现器按"枚举表 + `&容器` 实参"特征自动展开容器链，并凭"表被整体当实参
 消费"（查询形态）及时停住。
 
+### G3 主路径探针（probe_path.py）实测
+
+候选混着主路径、旁路、死代码——打到旁路上一切"成功"且什么也不发生。
+G3 自动完成裁决：给候选插 `write(2, "[PROBE] ...")` 探针（零头文件依赖）
+→ 增量构建 → 跑探针脚本 → 收集 stderr 命中：
+
+| shell | 命中（主执行路径） | 自动拒绝（未命中） |
+|---|---|---|
+| bash | `CHECK_FOR_RESERVED_WORD()@read_token_word` y.tab.c | `find_reserved_word`（y.tab.c func-ref + print_cmd.c:1398 旁路调用） |
+| mksh | `yylex` lex.c:1046 | tree.c / funcs.c（编辑器补全路径） |
+| dash | `findkwd()@readtoken` parser.c:725 | exec.c:788（describe_command）——**脚本覆盖不足**而非死代码，默认探针脚本没构造 `command -V` |
+
+最后一条是 G3 的边界：**裁决依赖探针脚本的覆盖面**。未命中只说明
+"这次没跑到"，不等于死代码——人工裁决旁路前先检查脚本是否触达了
+相关构造。
+
 ## 三条坑（发现器，改代码前先读）
 
 1. **净化必须等长**：剥注释/字符串要用等长空白替换。否则"用净化文本定位、
@@ -92,8 +119,8 @@ python3 hook_engine.py examples/anchors_example.py --srcdir <源码树>
    "新形态不在文中"守卫是最后防线，不是设计借口的替代品。
 3. **插桩点必须在主执行路径**。发现器产出的是候选不是结论。bash 里存在
    死代码孪生函数（`find_reserved_word` 与活的 `CHECK_FOR_RESERVED_WORD`
-   展开并存），打到死代码上一切都"成功"且什么也不发生——用探针验证命中
-   后再上表。
+   展开并存），打到死代码上一切都"成功"且什么也不发生——用
+   `probe_path.py` 探针验证命中后再上表。
 
 ## 边界：自动化不了的
 
@@ -119,6 +146,7 @@ python3 hook_engine.py examples/anchors_example.py --srcdir <源码树>
 | `tests/test_engine.sh`（11 断言） | 插桩/编译运行/幂等/dry-run/响亮失败/历史回滚/前缀陷阱/--list/库路径同引擎 | 无（自包含 fixture） |
 | `tests/test_discover.sh`（9 断言） | 语法/合成表发现/低命中拒绝/可复现/净化等长/花括号抗干扰 + 三壳真实树 | 可选：BASH_SRC_DIR / MKSH_SRC_DIR / DASH_SRC_DIR（缺则 SKIP） |
 | `tests/test_callers.sh`（9 断言） | direct 调用链/死代码无调用者/宏展开点/容器链/可复现 + 三壳真实树 | 同上 |
+| `tests/test_probe.sh`（6 断言） | 活路径命中/死代码不命中/探针幂等（重跑语义一致且不重复插针）+ 三壳真实树裁决 | 同上 |
 
 ## License
 

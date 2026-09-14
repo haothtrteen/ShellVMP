@@ -108,7 +108,58 @@ while frontier 有层:
 1. **op 执行引擎只有一份**（`run_ops()`）——CLI 与库共用；两份循环必然漂移。
 2. **回滚旧/新形态绝不互为子串**——设计时自检 `old in new`；引擎守卫是最后防线。
 3. **插桩点必须在主执行路径**——bash 存在死代码孪生（`find_reserved_word`），
-   打上去一切"成功"但什么也不发生；用探针验证命中后再上表。
+   打上去一切"成功"但什么也不发生；用探针（`probe_path.py`，§4.6）验证命中
+   后再上表。
+
+## 4.6 主路径探针（probe_path.py，规则 3 / G3）
+
+G1/G2 产出的是**候选**：混着主路径、旁路、死代码。裁决只能靠运行时证据——
+插桩点打可观测标记（探针），构建，跑真实脚本，命中的才是主执行路径。
+
+```text
+G2 候选（语句边界安全筛选）
+  → 自动生成探针锚点集（prepend_before）
+  → hook_engine 打探针（同一引擎，铁律 1）
+  → 增量构建 → 跑探针脚本 → 收集 stderr 的 [PROBE] 行
+  → 命中 = 主路径候选；未命中 = 旁路/死代码/未触达
+```
+
+### 探针形态
+
+```c
+{ extern long write(int, const void *, unsigned long);
+  (void)write(2, "[PROBE] file owner\n", N); }
+```
+
+块内 `extern` 声明 → **零头文件依赖**（mksh/dash 的相关文件没有 stdio.h）；
+LP64 下签名与 POSIX `write` 一致，无重声明冲突；任何 C 文件可编。
+
+### 候选安全筛选（四条禁止规则，全部真实踩坑）
+
+| 规则 | 踩坑症状 |
+|---|---|
+| 函数定义行上的调用不插 | 前插落到**文件顶层**，顶层复合语句非法 |
+| 锚点扩链碰函数定义行即放弃 | 扩链把探针推过函数头到顶层（两函数体一模一样时触发） |
+| 悬空控制头的 body 行不插 | 探针顶替 body、原语句被挤出循环：`continue not within a loop` |
+| `else if (...)` 行不插 | 拆散 if-else 链：`'else' without a previous 'if'`（bash 真实构建踩中） |
+
+### 幂等设计（真实踩坑）
+
+探针 tag **不含行号**，粒度 = `(file, owner)`：重跑时 G2 扫描行号因探针行
+漂移，行号进 tag 会让引擎的 `new+anchor` 幂等判据失配 → **重复插针**。
+锚点扩链同时跳过历史 `[PROBE]` 行（否则扩链拼进探针行文本，同样失配）。
+
+### 三壳裁决实测
+
+| shell | 命中（主执行路径） | 自动拒绝（未命中） |
+|---|---|---|
+| bash | `CHECK_FOR_RESERVED_WORD()@read_token_word`（y.tab.c） | `find_reserved_word`（y.tab.c func-ref + print_cmd.c:1398 旁路调用） |
+| mksh | `yylex`（lex.c:1046） | tree.c / funcs.c（编辑器补全路径） |
+| dash | `findkwd()@readtoken`（parser.c:725） | exec.c:788——**脚本覆盖不足**，非死代码 |
+
+**边界：裁决依赖探针脚本覆盖面**。dash exec.c:788（describe_command，
+处理 `command -V`）未命中是因为默认脚本没构造该形态——"这次没跑到"
+不等于死代码；人工裁决旁路前先检查脚本是否触达相关构造。
 
 ## 5. 边界（自动化做不到的）
 
@@ -122,11 +173,16 @@ while frontier 有层:
 - `tests/test_discover.sh`：9 断言全绿（6 自包含 + 3 壳真实树，缺树 SKIP）；
 - `tests/test_callers.sh`：9 断言全绿（6 自包含：direct 调用链/死代码/宏/容器链
   + 3 壳真实树，缺树 SKIP）；
+- `tests/test_probe.sh`：6 断言全绿（3 自包含：活路径命中/死代码不命中/
+  探针幂等 + 3 壳真实树裁决，缺树 SKIP）；
 - bash-5.2 生产锚点集：ShellVMP 仓库 `v7/bash_poc/anchors.py`（B0 重构后
   与旧脚本**字节级一致**，4/4 文件 md5 复现）；
 - mksh-R59c L3：锚点表驱动插桩，`sh Build.sh -r` 编译通过，4 项构造等价检查通过；
 - G2 引用图谱与手工分析交叉验证一致：mksh 的 `yylex`(lex.c:1046)、
-  dash 的 `findkwd` 两个调用点、bash 的宏展开点均被自动找回。
+  dash 的 `findkwd` 两个调用点、bash 的宏展开点均被自动找回；
+- G3 三壳探针裁决与 G2/手工分析一致：bash 主路径（宏展开）命中 +
+  `find_reserved_word` 自动拒绝、mksh `yylex` 命中、dash
+  `findkwd()@readtoken` 命中。
 
 ## 7. 迁移记录
 
@@ -134,3 +190,5 @@ while frontier 有层:
   `hook_engine.py` 自 ShellVMP `v7/bash_poc/isa_hook.py` 的 B0 表驱动重构抽出。
   ShellVMP 侧测试 `tests/test_hook_discover.sh` 改为指向兄弟仓库 `../sh-hook/`，
   缺仓库时 SKIP。
+- 2026-09：`discover_callers.py`（G2）与 `probe_path.py`（G3）在本仓库实现，
+  fixture 回归 + 三壳真实树验证固化于 `tests/test_callers.sh`、`tests/test_probe.sh`。
