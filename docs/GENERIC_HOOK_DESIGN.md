@@ -348,7 +348,7 @@ ROLE_MAP = {
 
 ---
 
-## 八、进展：规则 1 已实现并验证（2026-09）
+## 八、进展：规则 1/2/3 已实现并验证（2026-09）
 
 > **迁移注记（2026-09）**：发现器已与表驱动插桩引擎一起**抽出为独立子仓库
 > `sh-hook`**（「sh 通用 hook 点 —— 便捷快速移植不同 sh 解释器的特性」），
@@ -389,7 +389,7 @@ python3 ../sh-hook/discover_tables.py \
 |---|---|---|
 | G1 | 保留字表发现（规则 1） | ✅ 已完成（sh-hook `discover_tables.py`） |
 | G2 | 查表函数发现（规则 2） | ✅ **已完成（2026-09，sh-hook `discover_callers.py`）** |
-| G3 | 主路径裁决 + 探针（规则 3） | 📋 待做（**最有价值**） |
+| G3 | 主路径裁决 + 探针（规则 3） | ✅ **已完成（2026-09，sh-hook `probe_path.py`）** |
 | G4 | 人工核对 → 角色映射表 | 📋 待做 |
 | G5 | 接进 `anchors.py` | 📋 待做 |
 
@@ -401,6 +401,20 @@ python3 ../sh-hook/discover_tables.py \
 修正一处旧认知：`find_reserved_word` 是旁路（print_cmd.c:1398 一处调用）
 而非纯死代码——主路径裁决仍归 G3。
 
+**G3 实测摘要**（详见 sh-hook `docs/DESIGN.md` §4.6）：自动探针裁决——
+候选前插 `write(2,...)` 探针（零头文件依赖）→ 增量构建 → 跑探针脚本 →
+收集 `[PROBE]` 命中。§七的验收标准**两条全部达成**：
+
+| 验收标准（§七） | 实测结果 |
+|---|---|
+| dash 的 `kw_lookup` 必须是 `findkwd` | ✅ `findkwd()@readtoken`（parser.c:725）命中 |
+| bash 的 `find_reserved_word` 必须判为"不在主路径" | ✅ 自动拒绝（y.tab.c func-ref + print_cmd.c:1398 旁路均未命中） |
+
+mksh `yylex`(lex.c:1046) 同样命中。**未命中 ≠ 死代码**：裁决依赖探针
+脚本覆盖面（dash exec.c:788 处理 `command -V`，默认脚本未构造该形态
+而未命中）。探针幂等：tag 粒度 = `(file, owner)` 不含行号，重跑安全。
+回归：sh-hook `tests/test_probe.sh` 6 断言全绿（3 自包含 + 3 壳真实树）。
+
 > **G3 是"通用 hook"的核心价值所在** —— 它能自动避开
 > `PITFALLS.md` §5.1 那个 `find_reserved_word` 死代码坑。
 > G1 只是证明了"能被自动发现"，**还不足以证明"能自动选对插桩点"**。
@@ -410,5 +424,6 @@ python3 ../sh-hook/discover_tables.py \
 *本文档基于 2026-09 实测。事实来源：`dash-0.5.12/src/parser.c`（`findkwd@1629`、
 `parsekwd`、`readtoken@700`）、`mksh-mksh-R59c/{lex.c:1046,syn.c:789/825}`、
 `bash-5.2/{y.tab.c:4501/5296/7714, print_cmd.c:1398}`。
-规则 1 的可运行实现见 `tools/hook_discover/discover_tables.py`。
+规则 1/2/3 的可运行实现见 `../sh-hook/`（`discover_tables.py` /
+`discover_callers.py` / `probe_path.py`）。
 相关：[`C_LAYER_ROUTE_COMPARE.md`](C_LAYER_ROUTE_COMPARE.md)、[`PITFALLS.md`](PITFALLS.md) §5.1。*
