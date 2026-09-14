@@ -89,7 +89,20 @@ python3 $HERE/isa_hook.py     $SRC/execute_cmd.c $SRC/y.tab.c $SRC/variables.c $
 > **`isa_hook.py` 是硬性必需步骤。** 忘了跑，表里的令牌就没人翻译，
 > 运行期表现为 `v7p_89yg4fddx6: command not found`。脚本是幂等的，重复跑安全。
 
-`isa_hook.py` 的四个插桩点（对应 `isa_hook.c`）：
+**插桩器现在是表驱动的**（B0 重构）。所有"往哪个文件的哪一行插什么"
+都声明在 `v7/bash_poc/anchors.py` 的锚点表里，`isa_hook.py` 只负责读表执行。
+
+```sh
+# 新式（推荐）：指定解释器 + 源码树，锚点表自动决定改哪些文件
+python3 $HERE/isa_hook.py --interp bash-5.2 --srcdir $SRC
+python3 $HERE/isa_hook.py --list          # 列出全部锚点集
+python3 $HERE/isa_hook.py --interp bash-5.2 --srcdir $SRC --dry-run   # 只报告不写盘
+```
+
+> 旧式 4 路径调用（`build_poc.sh` 在用的那种）**继续支持**，两种入口结果
+> 已由 `tests/test_isa_hook_table.sh` 断言逐字节一致。
+
+bash-5.2 锚点集的四个插桩点（对应 `isa_hook.c`）：
 
 | 文件 | 位置 | 作用 |
 |---|---|---|
@@ -97,6 +110,36 @@ python3 $HERE/isa_hook.py     $SRC/execute_cmd.c $SRC/y.tab.c $SRC/variables.c $
 | `y.tab.c` | `CHECK_FOR_RESERVED_WORD` **宏** | L3 保留字还原。**注意**：`find_reserved_word` 是旁路死代码，patch 它 = 全程不生效 |
 | `variables.c` | `find_variable` 查表前 | L4 位置参数别名还原 |
 | `shell.c` | `shell_initialize()` 之后 | 自定义 builtin 接管 + 抗 dump 加固安装点 |
+
+**加一个新解释器 = 往 `anchors.py` 填一组 `ANCHOR_SET`**，不用改 `isa_hook.py`。
+已有一个**试验性** mksh 锚点集（`mksh-R59c`，只做 L3，见下 §4.2.1）。
+
+#### 4.2.1 mksh 锚点集（试验性，B1）
+
+mksh 的保留字识别比 bash 干净：不是宏、不是编译期生成的数组，而是 `lex.c` 里
+**一句** `ktsearch(&keywords, ident, h)` 查**运行期哈希表**。
+
+| | bash | mksh |
+|---|---|---|
+| 保留字表形态 | 编译期生成 `word_token_alist` | 运行期哈希表 `keywords`（`syn.c:825 initkeywords()`） |
+| 识别入口 | `CHECK_FOR_RESERVED_WORD` **宏**，两处展开 | `lex.c` **单点** `ktsearch` |
+| 陷阱 | 旁边有形态酷似的**死函数** `find_reserved_word` | 无 |
+
+插桩点选在 `memset(dp, 0, (ident + IDENT) - dp + 1);` 之后、
+`if (*ident != '\0' && (cf & (KEYWORD | ALIAS))) {` 之前 ——
+此刻 `ident` 已补零完成、即将被 `hash()`/`ktsearch` 消费。
+
+**状态：只验证了「锚点表能定位并正确插入 + 编译通过 + 行为不变」，
+尚未接入构建、尚未实现真正的翻译函数。** 用法：
+
+```sh
+python3 $HERE/isa_hook.py --interp mksh-R59c --srcdir <mksh源码树>
+sh Build.sh -r        # 已验证：编译成功，基本语法功能与未插桩版一致
+```
+
+> ⚠️ **已知风险（未解决）**：mksh 的 `ident` 是**栈上定长数组**（上界为编译期
+> 常量 `IDENT`）。ISA 别名长于原名时存在溢出风险。这是移植路线的**止损点**，
+> 详见 [`C_LAYER_ROUTE_COMPARE.md`](C_LAYER_ROUTE_COMPARE.md) §A.6。
 
 ### 4.3 Makefile 注入（**必须三处齐全**）
 

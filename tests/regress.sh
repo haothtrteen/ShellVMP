@@ -26,7 +26,7 @@ PASS=0; FAIL=0
 _cleanup() {
     [ "${REGRESS_KEEP:-0}" = "1" ] && return 0
     rm -f compile_*.log prod_*.sh run_*.out run_*.err tam_*.out tam__.sh \
-          test_big_ref.out test_small_ref.out 2>/dev/null
+          test_big_ref.out test_small_ref.out test_isa_hook_table.log 2>/dev/null
 }
 trap _cleanup EXIT
 
@@ -144,6 +144,16 @@ for mode in aes builtin; do
         echo "FAIL pk-$mode [compile]"; tail -3 "compile_pk_${mode}.log"; FAIL=$((FAIL+1))
     fi
 done
+
+echo ""
+echo "=== C 层插桩器锚点表（B0/B1）==="
+# 这个子测试有自己的 PASS/FAIL 汇总；此处只当作一个门（gate）计入总数，
+# 避免把它的十几条断言全灌进本套件的计数里。
+if bash "$SELF_DIR/test_isa_hook_table.sh" > test_isa_hook_table.log 2>&1; then
+    echo "PASS isa_hook-table（锚点表：逐字节/幂等/响亮失败）"; PASS=$((PASS+1))
+else
+    echo "FAIL isa_hook-table"; tail -5 test_isa_hook_table.log; FAIL=$((FAIL+1))
+fi
 
 echo ""
 echo "======================================"
