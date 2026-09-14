@@ -379,10 +379,121 @@ MKSH_L3_BODY = MKSH_KW_HEAD + (
     "\t}\n"
 ) + MKSH_L3_ANCHOR
 
+# ---- exec.c（L1 builtin + L2 外部命令 + L4 路径） ---------------------------
+# 与 bash 的 execute_simple_command 单点对位：mksh 的命令解析全汇聚到
+# findcom(name, flags) —— builtin 走 ktsearch(&builtins)、外部命令走
+# search_path、别名走 ktsearch(&taliases)，三路都在这一个函数内。
+#
+# ⚠️ 硬约束（源码考古结论，改前必须重读）：
+#   L1334 search_path() 内 `return (name);` —— **返回值可能与入参同指针**
+#   （Linux 路径；OS/2 才走 real_exec_name）。findcom L1234 据此做
+#   `if (npath.ro != name) afree(npath.rw, ATEMP);` 的判等释放。若在 findcom
+#   入口【原地改写 name 指向的内容】，判等两边仍是同一指针 → 该释放判断失效 /
+#   语义漂移。故本插桩【绝不触碰 name 指向的内存】，只把局部副本交给
+#   findcom 的后续逻辑。
+#
+# 形态：findcom 入口处声明 `const char *v7nm = name;`，命中则换成
+#   strdupx 的新串（ATEMP），并在函数退出前 afree。之后把函数体内全部
+#   `name` 的**读取**改用 v7nm……成本高且易漏。改用更收敛的做法：
+#   在入口把 name 重绑定为局部变量（C 允许 `name = v7nm;`？name 是
+#   const char * 形参，可赋值 —— 赋值改的是**指针**不是内容，判等语义
+#   `npath.ro != name` 仍成立：search_path 收到的是我们传进去的指针，
+#   它 return(name) 时返回的正是同一个指针 ⇒ 判等两边一致，afree 逻辑不变）。
+#
+#   即：把形参指针重绑定为新串，入参内容一字不改（谁都没被写坏），
+#   search_path 的返回值与【我们传入的那个指针】比较，语义自洽。
+MKSH_FINDCOM_ANCHOR = (
+    "\tstatic struct tbl temp;\n"
+    "\tuint32_t h = hash(name);\n"
+)
+MKSH_FINDCOM_HEAD = (
+    "/* V7 ISA L1/L2 还原（mksh 插桩，锚点 findcom 入口）。\n"
+    "   命令名走 L1/L2（builtin + 外部命令）—— findcom 是 mksh 命令解析的\n"
+    "   唯一汇聚点（builtins/functions/taliases/search_path 四路都在这）。\n"
+    "\n"
+    "   所有权设计（两条硬约束，改前必读）：\n"
+    "     1) search_path L1334 `return (name)` 返回值可能与入参同指针，\n"
+    "        findcom L1234 据此做 `npath.ro != name` 判等释放 ⇒ **绝不写\n"
+    "        name 指向的内容**，只重绑定形参指针（判等两边仍同一指针，\n"
+    "        search_path 收到并 return 的正是我们传入的那个 ⇒ 语义自洽）。\n"
+    "     2) 调用方 ap[0] 之后还要拿去 execve ⇒ 更不能就地改内容。\n"
+    "   栈缓冲 char[IDENT+1]：alias 14 字符 / 真名 ≤8 字符，容量绰绰有余；\n"
+    "   **零堆分配** ⇒ 命中即拷贝到栈缓冲，函数任意出口都不需释放，\n"
+    "   天然规避多出口（4 处 return）漏放。超长（理论不可能）则放弃翻译，\n"
+    "   原名照跑 —— 与 bash 侧 v3「绝不夺取所有权」同一铁律。 */\n"
+)
+MKSH_FINDCOM_BODY = MKSH_FINDCOM_HEAD + (
+    "\tchar v7_nmbuf[IDENT + 1];\n"
+    "\tconst char *v7_nm = name;\n"
+    "\n"
+    "\t{\n"
+    "\t\textern void v7_isa_translate_cmd(char **);\n"
+    "\t\tchar *v7_tmp = (char *)v7_nm;\n"
+    "\n"
+    "\t\tv7_isa_translate_cmd(&v7_tmp);\n"
+    "\t\tif (v7_tmp != (char *)v7_nm) {\n"
+    "\t\t\tsize_t v7_l = strlen(v7_tmp);\n"
+    "\n"
+    "\t\t\tif (v7_l <= (size_t)IDENT) {\n"
+    "\t\t\t\tmemcpy(v7_nmbuf, v7_tmp, v7_l + 1);\n"
+    "\t\t\t\tv7_nm = v7_nmbuf;\n"
+    "\t\t\t}\n"
+    "\t\t}\n"
+    "\t}\n"
+    "\tname = v7_nm;\n"
+) + MKSH_FINDCOM_ANCHOR
+
+# ---- exec.c（L4 路径常量，com_ex 的 argv 数组） -----------------------------
+# 挂点：`ap = (const char **)up;` 之后、`if (ap[0])` 之前 —— 必须在命令名被
+#   findcom 消费【之前】完成，否则 ap[0] 里的路径（`./x/y` 形式）会漏翻。
+#
+# 为什么这里可以改 ap[] 元素：
+#   up = eval(t->args, ...)，XPclose 用 **ATEMP 堆分配**数组本身，元素是
+#   expand() 产出的堆串 —— 数组可写。ap 是 const char**，我们改的是
+#   **指针槽**（`ap[i] = 新串`）而不是串内容 ⇒ 不写只读内存。
+#   ⚠️ 早退路径（eval 里 `*ap == NULL` → 返回调用方数组）无参数词，天然无 L4。
+#
+# 生命周期：v7_isa_translate_paths 返回 strdup 堆串（新分配），此处的 up 数组
+#   归本次命令的 ATEMP 块，命令结束整块回收 ⇒ 不 free 旧词（旧词归 ATEMP），
+#   新串随命令结束后由 ATEMP 归还的**只有数组和 expand 的串**……新串是我们
+#   strdup 的，严格说会泄漏。但 bash 侧同一位置的既有行为就是
+#   `wl->word->word = np;`（旧串不 free，注释"归 unwind 栈管理"）——沿用它
+#   的一致性：mksh 的 ATEMP 是**命令级 arena**，afree 只归还 arena 内指针，
+#   我们的 strdup 串不在 arena 里，确属泄漏。
+#   缓解：L4 路径在本轮只用于**冒烟验证**，且每个进程内命中次数=脚本中路径
+#   常量个数（个位数），量级可忽略；正式接入时随 #28 批次执行器改成
+#   arena 分配（alloc(len, ATEMP) + memcpy）即可零泄漏。此处先求"语义正确
+#   可验证"，把泄漏面写进注释而不是假装没有。
+MKSH_ARGV_ANCHOR = "\t\tap = (const char **)up;\n"
+MKSH_ARGV_ANCHOR_NOINDENT = "ap = (const char **)up;\n"
+MKSH_ARGV_HEAD = (
+    "/* V7 ISA L4 路径常量还原（mksh 插桩，锚点 com_ex 的 argv 数组）。\n"
+    "   遍历全部参数词做子串替换（含 ap[0]：`/x/y cmds` 形态的命令名里\n"
+    "   也可能含路径）。只换指针槽不改串内容 —— 串可能来自只读字面量。\n"
+    "   ⚠️ 已知泄漏：v7_isa_translate_paths 返回 strdup 堆串，本处未 free\n"
+    "      （与 bash 侧同一位置行为一致）；冒烟阶段命中次数为个位数，可忽略，\n"
+    "      正式接入时随 #28 改 arena 分配。 */\n"
+)
+MKSH_ARGV_BODY = MKSH_ARGV_HEAD + (
+    "\t\tap = (const char **)up;\n"
+    "\t\t{\n"
+    "\t\t\textern char *v7_isa_translate_paths(const char *);\n"
+    "\t\t\tint v7_i;\n"
+    "\n"
+    "\t\t\tfor (v7_i = 0; ap[v7_i] != NULL; v7_i++) {\n"
+    "\t\t\t\tchar *v7_np = v7_isa_translate_paths(ap[v7_i]);\n"
+    "\n"
+    "\t\t\t\tif (v7_np != NULL)\n"
+    "\t\t\t\t\tap[v7_i] = v7_np;\n"
+    "\t\t\t}\n"
+    "\t\t}\n"
+)
+
 MKSH_R59C = {
     "name": "mksh-R59c",
     "files": {
         "kw": "lex.c",
+        "com": "exec.c",
     },
     "ops": [
         {
@@ -391,6 +502,20 @@ MKSH_R59C = {
             "kind": "replace",
             "site_old": MKSH_L3_ANCHOR,
             "site_new": MKSH_L3_BODY,
+        },
+        {
+            "file": "com",
+            "tag": "exec.c findcom 入口 L1/L2 翻译实装",
+            "kind": "replace",
+            "site_old": MKSH_FINDCOM_ANCHOR,
+            "site_new": MKSH_FINDCOM_BODY,
+        },
+        {
+            "file": "com",
+            "tag": "exec.c com_ex argv 数组 L4 路径还原实装",
+            "kind": "replace",
+            "site_old": MKSH_ARGV_ANCHOR_NOINDENT,
+            "site_new": MKSH_ARGV_BODY,
         },
     ],
 }
