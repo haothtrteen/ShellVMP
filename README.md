@@ -273,6 +273,13 @@ ShellVMP/
 逐条注入步骤、三个 Android libc 线的取舍、以及踩过的坑全部整理在
 **[`docs/BUILD_PER_SHELL.md`](docs/BUILD_PER_SHELL.md)**。
 
+### 想再加一个解释器？先看两条路线的对比
+
+「把 ISA/v7core C 层移植进新 shell 树」与「把插桩做成通用补丁」是**两个不同的工作方向**，
+投入产出比不同。两条路线各自要解决什么问题、哪个该先做、止损点在哪，
+见 **[`docs/C_LAYER_ROUTE_COMPARE.md`](docs/C_LAYER_ROUTE_COMPARE.md)**（结论：先做通用补丁，
+拿 mksh 当第二个实例逼出抽象，止损点设在 mksh 的定长 `ident` 缓冲区）。
+
 ---
 
 ## License
