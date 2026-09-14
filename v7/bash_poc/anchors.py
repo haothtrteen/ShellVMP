@@ -522,7 +522,7 @@ MKSH_MAIN_RCSID = (
     '__RCSID("$MirOS: src/bin/mksh/main.c,v 1.374 2020/10/01 20:28:54 tg Exp $");\n'
 )
 MKSH_MAIN_DECLS = (
-    "/* V7 C1：builtin 接管 + 初始化挂载（v7/bash_poc/v7_builtin_takeover_mksh.c）。\n"
+    "/* V7 C1：builtin 接管 + 初始化挂载（v7/mksh_poc/v7_builtin_takeover_mksh.c）。\n"
     "   extern 声明放这里而非 sh.h，是为了让插桩点集中在一个文件、便于审计。 */\n"
     "extern void v7_builtin_takeover_install(void);\n"
     "extern void v7_isa_init(void);\n"

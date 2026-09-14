@@ -4,33 +4,46 @@
 # 用法：
 #   bash v7_build.sh <input.sh> <output> [选项]
 #
-# ★ r13 变更：本脚本现在是【唯一入口】，两条保护线用 V7_MODE 开关选择，
+# ★ r13 变更：本脚本现在是【唯一入口】，三条保护线用 V7_MODE 开关选择，
 #   不再需要使用者区分"该用哪个脚本"：
 #
 #   V7_MODE=bash（默认） 单进程形态：改版 bash 自解密（安全模型最强）
 #                        产物为可执行 bash 二进制（内含 blob）
+#   V7_MODE=mksh（r35）  单进程形态：改版 mksh 自解密
+#                        产物为可执行 mksh 二进制（内含 blob）
+#                        ★ 运行契约：必须带一个 argv 文件参数，惯例 /dev/null
+#                          （不带时 mksh 进 stdin 模式，解密分支不走 → 静默零输出）
+#                        ★ 直接执行 ./out.mksh，不要写成 `mksh out.mksh`
 #   V7_MODE=elf          ELF 双进程形态：elfrun + bash（工具链最全）
 #                        产物为 .so/.elf，可再走 vmp_apply.py --verify
-#   不给 V7_MODE 时按输出后缀自动判断：*.bash → bash 线；其余 → elf 线
+#   不给 V7_MODE 时按输出后缀自动判断：*.bash→bash 线、*.mksh→mksh 线、其余→elf 线
 #
 # 常用组合：
 #   # 单进程最强档（r33：aes 档当前不可用，V6_CRYPTO 固定 builtin）
 #   V7_MODE=bash V7_BASH_BIN=<VMP版bash> V7_OUTER_PASS='外层口令' V7_PASS='内层key' \
 #       bash v7/v7_build.sh in.sh out.bash
+#   # mksh 线一键（r35：从 mksh 源码现场构建改版解释器，无需预先准备）
+#   V7_MODE=mksh V7_MKSH_SRC=./mksh-src V7_OUTER_PASS='外层口令' V7_PASS='内层key' \
+#       bash v7/v7_build.sh in.sh out.mksh
 #   # ELF 全防护 + VMP（跨架构需 V7_CC）
 #   V7_MODE=elf V7_WB=1 V7_VMP=1 V7_SELF=1 V7_RAND_LABEL=1 V7_LABEL_OBF=1 \
 #       ANDROID_GATE=1 V7_CC=aarch64-linux-gnu-gcc \
 #       bash v7/v7_build.sh in.sh out.so
 #
 # ---------------------------------------------------------------- 通用开关
-#   V7_MODE    bash|elf（默认 bash；也可由输出后缀推断）
-#   V7_PASS    内层 passkey（V6 密钥分离，两条线通用）
-#   V7_CRYPTO  aes|builtin（V6 数据块算法，两条线通用；默认 builtin）
-#   V7_JUNK / V7_DECOY    垃圾块/诱饵块（默认 1，两条线通用）
+#   V7_MODE    bash|mksh|elf（默认 bash；也可由输出后缀推断）
+#   V7_PASS    内层 passkey（V6 密钥分离，三条线通用）
+#   V7_CRYPTO  aes|builtin（V6 数据块算法，通用；默认 builtin）
+#   V7_JUNK / V7_DECOY    垃圾块/诱饵块（默认 1，通用）
 #   V7_DIAG=1  排障版构建
 #   V7_WRAP_KEEP=1  保留裸产物
-#   V7_KEEP_STAGE=1 保留构建中间产物（令牌化版/V6 骨架/表 JSON，bash 线）
-#   ANDROID_GATE=1  注入安卓环境门控
+#   V7_KEEP_STAGE=1 保留构建中间产物（令牌化版/V6 骨架/表 JSON）
+#   ANDROID_GATE=1  注入安卓环境门控（脚本侧；与目标架构无关）
+# ---------------------------------------------------------------- mksh 线专有
+#   V7_MKSH_SRC     mksh R59c 源码目录（现场构建改版解释器，一键主路径）
+#   V7_MKSH_BIN     复用已构建的改版 mksh（跳过构建，秒级重打包）
+#   V7_ARCH/V7_CC   目标架构（交叉编译 aarch64 等）
+#   （其余同 bash 线：V7_OUTER_PASS/V7_SCRYPT_N/V7_ISA/V7_ISA_SEED …）
 # ---------------------------------------------------------------- bash 线专有
 #   V7_OUTER_PASS  外层口令（不给 = 离线分发模式，白盒 seed）
 #   V7_SCRYPT_N    外层 scrypt 内存参数（默认 131072）
@@ -71,9 +84,17 @@ _self_dir="$(pwd)"
 
 # ============================================================ r13 分流
 # 在解析 A 线参数之前先把 bash 线摘出去，避免两套参数互相污染。
+# r35 修复：-h/--help 必须在这里先拦下来。此前 `[ "$#" -lt 2 ]` 会先命中
+#   单个 -h 参数（$#=1）→ 只打印两行用法就 exit 2，下方 case 里的
+#   `-h|--help|help)` 分支永远走不到（文件头注释里承诺的完整开关表出不来）。
+#   注意必须用 $_self_dir 下的绝对路径取自身：本脚本在上面已经 cd 进自身
+#   目录，调用者传进来的相对 $0（如 v7/v7_build.sh）此时**解析不到**。
+case "${1:-}" in
+  -h|--help|help) grep '^#' "$_self_dir/$(basename "$0")" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
 if [ "$#" -lt 2 ]; then
     echo "用法: bash v7_build.sh <input.sh> <output> [选项]" >&2
-    echo "      V7_MODE=bash（默认，单进程）| elf（双进程 ELF）；-h 看完整开关" >&2
+    echo "      V7_MODE=bash（默认，单进程）| mksh（单进程 mksh）| elf（双进程 ELF）；-h 看完整开关" >&2
     exit 2
 fi
 _in="$1"; _out="$2"
@@ -86,14 +107,21 @@ case "$_in"  in /*) ;; *) _in="$_inv_dir/$_in"  ;; esac
 case "$_out" in /*) ;; *) _out="$_inv_dir/$_out" ;; esac
 V7_MODE="${V7_MODE:-}"
 if [ -z "$V7_MODE" ]; then
-    # 按输出后缀推断：*.bash → 单进程线；其余 → ELF 线。
-    # 特例：*.sh 本身两条线都可能产出（B 线 V7_WRAP=1 的产物也是 .sh），
-    # 无法只靠后缀区分 —— 这时看 V7_BASH_BIN / V7_SRC（B 线专用输入）：
-    # 给了就说明调用者想走单进程线，否则仍按 ELF 线处理（保持旧行为）。
+    # 按输出后缀推断：*.bash → 单进程 bash 线；*.mksh → mksh 线；其余 → ELF 线。
+    # 特例：*.sh 本身三条线都可能产出（B 线 V7_WRAP=1 的产物也是 .sh），
+    # 无法只靠后缀区分 —— 这时看专用输入变量：
+    #   V7_MKSH_BIN / V7_MKSH_SRC → mksh 线
+    #   V7_BASH_BIN / V7_SRC      → bash 线
+    #   都没有                     → ELF 线（保持旧行为）
+    # mksh 判定放在前面：同时给了两组（罕见但合法）时，显式指定 mksh 输入的
+    # 意图更强 —— mksh 是后加入的线，用户不会无意中设它的变量。
     case "$_out" in
         *.bash|*.sh.bash) V7_MODE="bash" ;;
+        *.mksh|*.sh.mksh) V7_MODE="mksh" ;;
         *.sh)
-            if [ -n "${V7_BASH_BIN:-}" ] || [ -n "${V7_SRC:-}" ]; then
+            if [ -n "${V7_MKSH_BIN:-}" ] || [ -n "${V7_MKSH_SRC:-}" ]; then
+                V7_MODE="mksh"
+            elif [ -n "${V7_BASH_BIN:-}" ] || [ -n "${V7_SRC:-}" ]; then
                 V7_MODE="bash"
             else
                 V7_MODE="elf"
@@ -456,11 +484,136 @@ case "$V7_MODE" in
         echo "      解释，无随机名还原 hook）。ISA 保护请走 bash 线（V7_BASH_BIN/V7_SRC）。" >&2
     fi
     ;;
+  mksh)
+    # ==================================================== r35：mksh 魔改解释器线
+    # 产物形态：**改版 mksh 二进制 + 尾部内嵌加密骨架**（与 bash 线同为 ELF，
+    # 但运行契约不同 —— 见下方运行示例，必须带一个 argv 文件参数）。
+    #
+    # ★ 与 bash 线的**顺序差异**（本分支刻意不同，照抄 bash 分支会死锁）：
+    #   bash 线在本脚本里先做 ISA 改写（用调用者提供的 V7_BASH_BIN 做 -n 预检），
+    #   再交给 v7bash_build.sh 构建。
+    #   mksh 线的改版 mksh 是**现场构建**出来的，-n 预检必须用这个刚出炉的
+    #   二进制 ⇒ ISA 段整体**下移到子脚本**（构建之后再做）。
+    #   故本分支不做 ISA 改写，只翻译参数 + 复用与解释器无关的 sanity 检查。
+    MKSH_SIDE="$_self_dir/mksh_poc/v7mksh_build.sh"
+    [ -f "$MKSH_SIDE" ] || { echo "错误：找不到 mksh 线构建器 $MKSH_SIDE" >&2; exit 1; }
+
+    # r34：_isa_* 预初始化（set -u）。本分支虽不做 ISA 改写，但收尾段无条件
+    # 引用 → 不预初始化会在 set -u 下崩为 unbound variable（bash 线踩过）。
+    _isa_bin=""; _isa_in=""; _isa_json=""
+
+    if [ "${V7_KEEP_STAGE:-0}" = "1" ]; then
+        export V7_KEEP_STAGE=1
+    fi
+
+    # 把通用开关翻译成 mksh 线参数（只在显式设置时传递，保持其默认值生效）
+    _margv=("$_in" -o "$_out")
+    [ -n "${V7_OUTER_PASS:-}"  ] && _margv+=(--outer-pass "$V7_OUTER_PASS")
+    [ -n "${V7_PASS:-}"        ] && _margv+=(--pass "$V7_PASS")
+    [ -n "${V7_CRYPTO:-}"      ] && _margv+=(--crypto "$V7_CRYPTO")
+    [ -n "${V7_SCRYPT_N:-}"    ] && _margv+=(--scrypt-n "$V7_SCRYPT_N")
+    [ -n "${V7_UNWRAP_ITER:-}" ] && _margv+=(--unwrap-iter "$V7_UNWRAP_ITER")
+    [ -n "${V7_L1_ITER:-}"     ] && _margv+=(--l1-iter "$V7_L1_ITER")
+    [ -n "${V7_JUNK:-}"        ] && _margv+=(--junk "$V7_JUNK")
+    [ -n "${V7_DECOY:-}"       ] && _margv+=(--decoy "$V7_DECOY")
+    [ -n "${ANDROID_GATE:-}"   ] && _margv+=(--android-gate "$ANDROID_GATE")
+    # ISA 开关（mksh 线在子脚本里做，这里只透传）
+    [ -n "${V7_ISA:-}"         ] && _margv+=(--isa "$V7_ISA")
+    [ -n "${V7_ISA_SEED:-}"    ] && _margv+=(--isa-seed "$V7_ISA_SEED")
+    [ -n "${V7_ISA_DECOY:-}"   ] && _margv+=(--isa-decoy "$V7_ISA_DECOY")
+    [ -n "${V7_ISA_SHADOW:-}"  ] && _margv+=(--isa-shadow "$V7_ISA_SHADOW")
+
+    # r14：目标架构是**编译期**决定的，必须显式传导 —— 否则现场构建出的
+    # mksh 是宿主架构，内嵌进产物后拿到 aarch64 设备上跑不了。
+    case "${V7_CC:-}" in
+        *aarch64*|*arm64*) _V7_ARCH="aarch64" ;;
+    esac
+    case "${V7_ARCH:-$_V7_ARCH}" in
+        aarch64|arm64) _margv+=(--target-arch aarch64) ;;
+        x86_64|amd64)  _margv+=(--target-arch x86_64)  ;;
+    esac
+
+    # ANDROID_GATE 与 TARGET_OS 的语义区分（用户极易混淆，故显式提示）
+    if [ "${ANDROID_GATE:-1}" = "1" ]; then
+        echo "提示：ANDROID_GATE=1 是【脚本侧环境门控】（V6 注入，产物仅安卓可跑）。" >&2
+        echo "      若要交叉编译 aarch64/Android 版 mksh **本身**，另设 V7_ARCH=aarch64" >&2
+        echo "      或 V7_CC=aarch64-linux-gnu-gcc —— 两者不是一回事。" >&2
+    fi
+
+    # V7_MKSH_BIN / V7_MKSH_SRC 是 mksh 线入参，调用者常给相对包根的路径，而
+    # 子脚本会在自己的目录里解析 —— 这里先按三级（调用者 cwd → 包根 → v7/）
+    # 转成绝对路径。判据用 `-f`/`-d` 而非 `-x`：跨架构复用时宿主**本来就无法
+    # 执行**目标架构的 mksh，用 `-x` 会让所有候选分支落空（bash 线踩过此坑）。
+    if [ -n "${V7_MKSH_BIN:-}" ]; then
+        if [ -f "$V7_MKSH_BIN" ]; then _mb="$V7_MKSH_BIN"
+        elif [ -f "$_inv_dir/$V7_MKSH_BIN" ]; then _mb="$_inv_dir/$V7_MKSH_BIN"
+        elif [ -f "$_self_dir/../$V7_MKSH_BIN" ]; then _mb="$_self_dir/../$V7_MKSH_BIN"
+        elif [ -f "$_self_dir/$V7_MKSH_BIN" ]; then _mb="$_self_dir/$V7_MKSH_BIN"
+        else _mb="$V7_MKSH_BIN"; fi
+        _margv+=(--mksh "$_mb")
+    fi
+    if [ -n "${V7_MKSH_SRC:-}" ]; then
+        if [ -d "$V7_MKSH_SRC" ]; then _ms="$V7_MKSH_SRC"
+        elif [ -d "$_inv_dir/$V7_MKSH_SRC" ]; then _ms="$_inv_dir/$V7_MKSH_SRC"
+        elif [ -d "$_self_dir/../$V7_MKSH_SRC" ]; then _ms="$_self_dir/../$V7_MKSH_SRC"
+        elif [ -d "$_self_dir/$V7_MKSH_SRC" ]; then _ms="$_self_dir/$V7_MKSH_SRC"
+        else _ms="$V7_MKSH_SRC"; fi
+        _margv+=(--src "$_ms")
+    fi
+    # 二选一强校验（照抄 bash 分支的 V7_BASH_BIN/V7_SRC 判据）
+    [ -n "${V7_MKSH_BIN:-}" ] || [ -n "${V7_MKSH_SRC:-}" ] || {
+        echo "错误：mksh 线需要 V7_MKSH_BIN=<改版mksh> 或 V7_MKSH_SRC=<mksh源码目录>（二选一）" >&2
+        echo "      示例：V7_MODE=mksh V7_MKSH_SRC=./mksh-src V7_PASS='...' bash v7/v7_build.sh in.sh out.mksh" >&2
+        exit 2
+    }
+
+    # r16-6：argv 泄漏扫描（构建前 lint）。扫的是**明文脚本**，与目标解释器
+    # 无关 ⇒ 原样复用 bash 分支的逻辑（仅 rc=2 阻断，命中只提示）。
+    if [ "${V7_ARGV_SCAN:-1}" = "1" ] && command -v python3 >/dev/null 2>&1; then
+        python3 "$_self_dir/../tools/argv_leak_scan.py" "$_in" || {
+            _arc=$?
+            if [ "$_arc" = "1" ]; then
+                echo "提示：存在 argv 泄漏点（报告见上，已脱敏）。构建继续 ——" >&2
+                echo "      机密建议改走环境变量/fd；运行期可开 V7_WRAP 自释放+反调试缓解。" >&2
+            else
+                echo "错误：argv_leak_scan 运行失败（rc=$_arc）" >&2
+                exit 1
+            fi
+        }
+    fi
+    # r33d：V6 兼容性 lint。检查的是 V6 混淆器兼容性（errexit 陷阱 /
+    # set -x 反调试指纹），**V6 生成器两线共用同一份** ⇒ 结论同样适用。
+    if [ "${V7_LINT:-1}" = "1" ] && command -v python3 >/dev/null 2>&1; then
+        _lint_args=""
+        [ "${V7_LINT_STRICT:-0}" = "1" ] && _lint_args="--strict"
+        python3 "$_self_dir/../tools/v6_lint.py" "$_in" $_lint_args || {
+            echo "错误：v6_lint 发现兼容性问题（V7_LINT_STRICT=1 阻断；V7_LINT=0 可关闭检查）" >&2
+            exit 1
+        }
+    fi
+
+    # V7_DIAG=1 排障版：诊断能力是**编译期**决定的（-DV7_DIAG），复用现成
+    # 二进制时无从开启 —— 给明确提示，否则用户会拿到"设了 V7_DIAG=1 却无输出"
+    # 的产物而不知所措。
+    if [ "${V7_DIAG:-0}" = "1" ]; then
+        if [ -n "${V7_MKSH_SRC:-}" ]; then
+            _margv+=(--diag)
+        else
+            echo "警告：V7_DIAG=1 需要现场从源码构建（V7_MKSH_SRC=<mksh源码目录>）。" >&2
+            echo "      当前走的是复用二进制路径（V7_MKSH_BIN），诊断能力在编译期" >&2
+            echo "      决定，无法事后开启 —— 该产物设 V7_DIAG=1 不会有任何输出。" >&2
+        fi
+    fi
+
+    [ "${V7_MODE_QUIET:-0}" = "1" ] || echo "==> V7_MODE=mksh（单进程：改版 mksh 自解密）"
+    bash "$MKSH_SIDE" "${_margv[@]}" || exit $?
+    exit 0
+    ;;
   -h|--help|help)
     grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0
     ;;
   *)
-    echo "错误：V7_MODE 只能是 bash 或 elf（当前: $V7_MODE）" >&2; exit 2
+    echo "错误：V7_MODE 只能是 bash、mksh 或 elf（当前: $V7_MODE）" >&2; exit 2
     ;;
 esac
 # ======================================================== r13 分流结束

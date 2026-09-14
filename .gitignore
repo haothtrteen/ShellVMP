@@ -24,6 +24,14 @@ v7/.blobgen.stamp
 *.tmp
 .commit_msg
 *~
+# elf 线在 v7/ 下落的 pid 后缀临时文件（正常退出会自清；异常中断会残留）
+#   v7_skel_<pid>.sh / v7_compile_<pid>.log / v7_cc_<pid>.log /
+#   v7_ct_<pid>.bin / v7_tag_<pid>.txt —— 见 v7_build.sh 的 trap 清理段
+v7/v7_skel_*.sh
+v7/v7_compile_*.log
+v7/v7_cc_*.log
+v7/v7_ct_*.bin
+v7/v7_tag_*.txt
 
 # ── 敏感/本地资料（勿提交）──────────────────────────────
 # 符号快照是"哪里是敏感函数"的地图，本地保留，勿分发
