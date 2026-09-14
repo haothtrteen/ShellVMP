@@ -203,7 +203,11 @@ case "$V7_MODE" in
     # WRAP 嵌入）。仅 bash 线 —— elf 线的骨架交给无 hook 的普通 bash，改写必死。
     # L1/L2 改写"宁缺勿滥"+未改写位置原名照跑（hook 只拦表内随机名），兼容性 100%；
     # L3/L4 改写器属后续迭代，此处暂不启用（表生成已含四层，运行端 hook 已支持）。
-    _isa_bin=""; _isa_in=""
+    # r34 修复：_isa_json 也必须预初始化 —— V7_ISA=0 时不进分支，
+    # 而下方 V7_KEEP_STAGE/清理段无条件引用它，set -u 下必崩
+    # （实测：产物正常生成，脚本在收尾处 "line 412: _isa_json: unbound
+    #  variable" 退出 1，被误读为"构建失败"）。
+    _isa_bin=""; _isa_in=""; _isa_json=""
     if [ "${V7_ISA:-1}" = "1" ]; then
         command -v python3 >/dev/null 2>&1 || { echo "错误：V7_ISA 需要 python3" >&2; exit 1; }
         # r33b：_bb 仅在 V7_BASH_BIN 非空时赋值；set -u 下必须用 ${_bb:-}
@@ -745,12 +749,23 @@ echo "信息：V6 骨架完成（$(wc -c < "$SKEL") 字节，crypto=$V6_MODE）"
 # 修法：骨架最前面插入一次条件 shift（仅 V7_SELF 模式、且确实被注入时生效）。
 #   普通模式 / 未走 wrap 的手工执行均不受影响。
 # 关闭：V7_SKEL_SHIFT=0 保留旧契约（参数从 $2 读）。
+#
+# r34 跨解释器修复（mksh 全链路冒烟实测）：原写法 `[ -n "$V7_SELF" ] && shift`
+#   在【位置参数为空】时有致命差异 ——
+#     bash：shift 失败 → 语句返回非零 → 脚本**继续**执行（顶层非 set -e）；
+#     mksh：`shift: nothing to shift` → **当场终止脚本**，rc=1，全程零输出。
+#   ELF 全内置形态正是"无用户参数"（argv = [bash, /proc/self/fd/N, /dev/null]，
+#   占位符已被 V7 逻辑吞掉）⇒ 一旦内嵌解释器换成 mksh，骨架第一行即死，
+#   症状与"解密失败"完全一样（静默 rc，极易误判）。
+#   加 `[ "$#" -gt 0 ]` 守卫后两侧行为一致；bash 侧语义不变（原本也是空参
+#   时 shift 失败、无实际操作）。
 if [ "$V7_SELF" = "1" ] && [ "${V7_SKEL_SHIFT:-1}" = "1" ]; then
     _skel_tmp="${SKEL}.shift.$$"
+    _skel_shift_line='[ -n "$V7_SELF" ] && [ "$#" -gt 0 ] && shift'
     if head -n 1 "$SKEL" | grep -q '^#!'; then
-        { head -n 1 "$SKEL"; printf '[ -n "$V7_SELF" ] && shift\n'; tail -n +2 "$SKEL"; } > "$_skel_tmp"
+        { head -n 1 "$SKEL"; printf '%s\n' "$_skel_shift_line"; tail -n +2 "$SKEL"; } > "$_skel_tmp"
     else
-        { printf '[ -n "$V7_SELF" ] && shift\n'; cat "$SKEL"; } > "$_skel_tmp"
+        { printf '%s\n' "$_skel_shift_line"; cat "$SKEL"; } > "$_skel_tmp"
     fi
     mv -f "$_skel_tmp" "$SKEL"
     echo "信息：已注入骨架参数修正（V7_SELF 模式 shift，V7_SKEL_SHIFT=0 可关闭）"
