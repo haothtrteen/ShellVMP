@@ -346,12 +346,38 @@ MKSH_IDENT_LOOKUP = (
 )
 
 MKSH_KW_HEAD = (
-    "/* V7 ISA L3 保留字还原（B1 试验插桩）。\n"
+    "/* V7 ISA L3 保留字还原（mksh 插桩）。\n"
     "   mksh 的保留字表是**运行期哈希表** keywords：单点 ktsearch，无宏展开、\n"
     "   无 bash 那种 find_reserved_word 死代码孪生，故插桩点更干净。\n"
     "   此处 ident 已由上方 memset 补零完毕、即将被 hash()/ktsearch 消费，\n"
     "   在此把别名换成真名，后续 ktsearch 即可命中原生 token 值。 */\n"
 )
+
+# L3 翻译实装（2026-09）：在 hash() 计算前把 ident 里的别名换成真名。
+#   所有权契约：v7_isa_translate_kw 返回的是 isa_hook 内部视图（无命中返回
+#   入参自身），必须立即 memcpy 拷回、不得持有指针——与 bash 侧 YT_NEW v3
+#   "绝不夺取 token buffer 所有权"同一铁律。ident 是 char[IDENT+1]（sh.h:2362，
+#   IDENT=64），ISA 别名 4-6 位、真名 ≤8 位，空间裕量充分；拷回后重新补零，
+#   保持 mksh "ident 数组 NUL padded" 契约（lex.c 上方 memset 的注释要求）。
+MKSH_L3_ANCHOR = MKSH_IDENT_LOOKUP + (
+    "\t\tstruct tbl *p;\n"
+    "\t\tuint32_t h = hash(ident);\n"
+)
+MKSH_L3_BODY = MKSH_KW_HEAD + (
+    "\t{\n"
+    "\t\textern const char *v7_isa_translate_kw(const char *);\n"
+    "\t\tconst char *v7kw = v7_isa_translate_kw(ident);\n"
+    "\n"
+    "\t\tif (v7kw != NULL && v7kw != (const char *)ident) {\n"
+    "\t\t\tsize_t v7l = strlen(v7kw);\n"
+    "\n"
+    "\t\t\tif (v7l <= IDENT) {\n"
+    "\t\t\t\tmemcpy(ident, v7kw, v7l + 1);\n"
+    "\t\t\t\tmemset(ident + v7l + 1, 0, (size_t)(IDENT - v7l));\n"
+    "\t\t\t}\n"
+    "\t\t}\n"
+    "\t}\n"
+) + MKSH_L3_ANCHOR
 
 MKSH_R59C = {
     "name": "mksh-R59c",
@@ -361,10 +387,10 @@ MKSH_R59C = {
     "ops": [
         {
             "file": "kw",
-            "tag": "lex.c ktsearch(&keywords)",
-            "kind": "prepend_before",
-            "anchor": MKSH_IDENT_LOOKUP,
-            "new": MKSH_KW_HEAD,
+            "tag": "lex.c ktsearch(&keywords) L3 翻译实装",
+            "kind": "replace",
+            "site_old": MKSH_L3_ANCHOR,
+            "site_new": MKSH_L3_BODY,
         },
     ],
 }

@@ -544,6 +544,39 @@ def _is_ident(s):
         all(c == "_" or c.isalnum() for c in s)
 
 
+def build_rewrite_map(table, layers):
+    """与 C 端查表语义严格对齐的 orig→alias 改写映射（层过滤版）。
+
+    C 端还原：顺序扫描，取**首个** alias 命中的条目，还原为该条目的 orig
+    （== ISA_SYMBOLS[sym]）。因此改写侧唯一安全规则：orig=B 只允许替换成
+    "首个命中会还原回 B"的别名。
+
+    诱饵（幻影/影子）刻意不落盘标记（反取证：表里真假不可分）——所以
+    这里**不区分真伪**，而是按条目顺序模拟 C 端首个命中，一切自然对齐：
+      · 影子（复用真 alias、sym 指向别的词、恒排在真条目后）：首个命中
+        恒为真条目 ⇒ 影子被跳过，绝不污染映射；
+      · 幻影（自造 alias、orig/sym 为同层真词）：首个命中是它自己，还原
+        回它的 orig ⇒ 它也是该词的合法改写别名（还原结果相同，任选）。
+
+    旧写法 `{it["orig"]: it["alias"] for it in table}` 是 orig→alias 方向
+    的后写覆盖——影子条目（orig=B、alias=A 的别名）后写时会把 B 的真映射
+    顶掉，B 被替换成"运行时还原成 A"的别名 ⇒ 语义错乱。mksh L3 冒烟
+    （seed 20260914）实测炸出 `if ...; then` 位被写成 done 的别名，产物
+    报 `syntax error: unexpected 'done'`。bash 历史全绿纯属该 seed 下
+    影子恰好没命中用例词——潜伏的随机炸弹，勿回退。
+    """
+    first_hit = {}                  # alias → (orig, layer)：模拟 C 端首个命中
+    for it in table:
+        a = it.get("alias")
+        if a and a not in first_hit:
+            first_hit[a] = (it["orig"], it["layer"])
+    amap = {}
+    for a, (orig, layer) in first_hit.items():
+        if layer in layers and orig not in amap:
+            amap[orig] = a
+    return amap
+
+
 def rewrite_l12(text, table):
     """L1/L2/L3 命令位置改写 + L4 路径常量（词内子串）。返回 (新文本, 改写计数, 跳过计数)。
 
@@ -555,8 +588,7 @@ def rewrite_l12(text, table):
         流经此处（各自独立透传分支），天然豁免；运行时会原样还原为原路径，
         故"任何位置被替换"都不改变语义（不像 $@ 这类有上下文语义的东西）。
     """
-    alias_map = {it["orig"]: it["alias"]
-                 for it in table if it["layer"] in (1, 2, 3)}
+    alias_map = build_rewrite_map(table, (1, 2, 3))
     if not alias_map:
         return text, 0, 0
     path_hits = 0
@@ -796,7 +828,7 @@ def rewrite_l4_path(text, table):
     （初版就踩了：双引号分支逐字符透传，根本不进词提取，引号内全漏改）。
     长串优先：/system/bin 必须先于 /system，否则被短串切碎。
     """
-    pm = {it["orig"]: it["alias"] for it in table if it["layer"] == 5}
+    pm = build_rewrite_map(table, (5,))
     if not pm:
         return text, 0
     keys = sorted(pm, key=len, reverse=True)
@@ -872,7 +904,7 @@ def rewrite_l4_param(text, table):
     核心展开器里复制 splice/quoted 处理，属高风险改动 —— 留到 #28 执行器阶段
     （那一步本就要重写展开层）一起做。
     """
-    pmap = {it["orig"]: it["alias"] for it in table if it["layer"] == 4}
+    pmap = build_rewrite_map(table, (4,))
     if not pmap:
         return text, 0
 

@@ -128,6 +128,10 @@ def main():
     ap.add_argument("--json", help="表 .json（用于变长项断言，缺省则同目录推断）")
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--keep", action="store_true", help="保留生成的中间脚本")
+    ap.add_argument("--l3-only", action="store_true",
+                    help="仅改写/断言 L3 保留字层（mksh 等暂未实装 L1/L2/L4 "
+                         "插桩的解释器冒烟）：命令名保持真名，跳过依赖 "
+                         "L1/L4 命中的用例")
     args = ap.parse_args()
 
     if not os.path.isfile(args.bash):
@@ -141,12 +145,15 @@ def main():
         table = v7_isa.deserialize(f.read())
 
     jpath = args.json or os.path.splitext(args.table)[0] + ".json"
+    # 变长项统计层与改写层一致：--l3-only 只改写 L3，L1/L2 变长项不可能命中，
+    # 混进来只会让 need_grow 断言先天不成立（L3 别名恰无变长项时恒空）
+    grow_layers = (3,) if args.l3_only else (1, 2, 3)
     grow_aliases = set()
     if os.path.isfile(jpath):
         with open(jpath, "r", encoding="utf-8") as f:
             j = json.load(f)
         for e in j.get("table", []):
-            if e.get("layer") not in (1, 2, 3):
+            if e.get("layer") not in grow_layers:
                 continue
             orig = e.get("orig", "")
             if len(orig) > len(e.get("alias", "")):
@@ -157,15 +164,25 @@ def main():
     tmpdir = "/tmp/isa_itest_%d" % os.getpid()
     os.makedirs(tmpdir, exist_ok=True)
 
+    # --l3-only：改写只动保留字（命令名保持真名）；跳过依赖 L1/L4 命中的用例
+    # （V7_ISA_TABLE 仍传完整表——C 端各插桩点自带 layer 过滤，多余条目空转）
+    table_rw = table
+    skip_cases = set()
+    if args.l3_only:
+        table_rw = [e for e in table if e.get("layer") == 3]
+        skip_cases = {"simple", "l4_path"}
+
     npass = nfail = 0
     grow_covered = set()
 
     for name, script, script_args, need_grow in CASES:
+        if name in skip_cases:
+            continue
         orig_path = os.path.join(tmpdir, name + ".orig.sh")
         rew_path = os.path.join(tmpdir, name + ".rew.sh")
         with open(orig_path, "w", encoding="utf-8") as f:
             f.write(script)
-        rewritten, _counts = v7_isa.rewrite_all(script, table)
+        rewritten, _counts = v7_isa.rewrite_all(script, table_rw)
         with open(rew_path, "w", encoding="utf-8") as f:
             f.write(rewritten)
 
@@ -179,7 +196,7 @@ def main():
         problems = []
         if not hits:
             problems.append("空洞：改写产物未命中任何别名（表/用例失效）")
-        if need_grow and not (hits & grow_aliases):
+        if need_grow and grow_aliases and not (hits & grow_aliases):
             problems.append("未覆盖变长命中（起不到拦截堆越界的作用）")
         if arc == "TIMEOUT":
             problems.append("执行超时（疑似死循环/挂起）")
