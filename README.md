@@ -139,7 +139,7 @@ bash tools/v6_pm_diag.sh    # 逐条列出 6 项会触发密钥污染的条件
 |---|---|---|---|---|---|
 | **纯脚本线**（最快上手） | `v6/shell_script_obfuscator_v6.sh` | 混淆后的 `.sh` | ❌ | 宿主有 bash **或** mksh 即可 | ✅ 稳定 |
 | **bash 线**（最强） | `v7/v7_build.sh` | 改过的 bash 二进制 | ✅ L1-L6 | 自带解释器，不依赖宿主 | ✅ 生产可用 |
-| **mksh 线** | 见 [`docs/BUILD_MKSH.md`](docs/BUILD_MKSH.md) | 插桩后的 mksh | ⚠️ L1-L4 已通 | 自带解释器 | 🧪 **构建可用，打包未通** |
+| **mksh 线** | `v7/v7_build.sh`（`V7_MODE=mksh`） | 改过的 mksh 二进制 | ✅ L1-L6 | 自带解释器，不依赖宿主 | ✅ **已可打包**（C1/C2/C3 已通） |
 
 ### 怎么选
 
@@ -147,12 +147,27 @@ bash tools/v6_pm_diag.sh    # 逐条列出 6 项会触发密钥污染的条件
 |---|---|
 | 只想快速挡一下源码泄漏 | **纯脚本线**（零构建，一条命令） |
 | 要最强保护、能接受自带几 MB 解释器 | **bash 线** |
-| 目标是 Android 真机 / 想省掉内嵌 bash 的体积 | **mksh 线** —— 但**先读** [`BUILD_MKSH.md`](docs/BUILD_MKSH.md) §一，它**目前还不能打包脚本** |
+| 目标是 Android 真机 / 想省掉内嵌 bash 的体积 | **mksh 线** —— 约 3 万行源码（bash 约 150 万行），产物小得多 |
 | 不确定 | 先用纯脚本线跑通，再上 bash 线 |
 
-> **诚实提示**：mksh 线目前只有**解释器插桩能力**，尚不具备"加密内嵌 + 自我解密"的打包能力
-> （C 层三件套与 L6 未移植，工作计划见 [`docs/BUILD_PER_SHELL.md`](docs/BUILD_PER_SHELL.md) §十）。
-> 现在就要能用的保护，请走 bash 线或纯脚本线。
+**mksh 线一条命令**（不需要预先构建 mksh，会从源码现场构建改版解释器）：
+
+```bash
+V7_MODE=mksh V7_MKSH_SRC=./mksh-src V7_OUTER_PASS='外层口令' V7_PASS='内层key' \
+  bash v7/v7_build.sh your_script.sh app.mksh
+
+# 运行 —— ★ 必须带一个 argv 文件参数（惯例 /dev/null），见下方提示
+echo '内层key' | V7_SELF=1 V7_PASS='外层口令' V7_ISA_TABLE=app.mksh.isa.bin \
+  ./app.mksh /dev/null
+```
+
+> **★ 运行契约**：产物必须带一个 argv 文件参数。**不带时 mksh 进 stdin 模式
+> （FSTDIN），解密分支根本不会被走到 → 静默 rc=0、零输出** —— 这是契约，不是缺陷。
+> 同理，产物是 ELF，要 `./app.mksh` **直接执行**，**不要**写成 `mksh app.mksh`
+> （那样 `/proc/self/exe` 指向解释器而非产物）。详见
+> [`docs/BUILD_MKSH.md`](docs/BUILD_MKSH.md) §六.3。
+>
+> **尚未做的**：跨架构（aarch64）实测、`V7_WRAP` 自释放包装接入（属 C4）。
 
 ### 自己构建各 shell 的 C 层补丁
 
@@ -219,18 +234,24 @@ ShellVMP/
 │   ├── elfrun.c                        # ELF 封装加载器
 │   ├── crypto_core.h                   # 密码学核心（SHA-256/HMAC/流密码/scrypt-like）
 │   ├── v7_wipe.h                       # 内存擦除
-│   ├── v7_build.sh                     # V7 构建入口
+│   ├── v7_build.sh                     # V7 统一构建入口（V7_MODE=bash|mksh|elf）
 │   ├── v7_wrap.sh                      # V7 一键封装
 │   ├── blobgen.c                       # 载荷生成
-│   └── bash_poc/                       # V7-ISA 解释器魔改 PoC
-│       ├── isa_hook.c / .py            # 四层令牌化表：C 端翻译 + Python 端插桩
-│       ├── anchors.py                  # ★ 锚点表（bash-5.2 / mksh-R59c）
-│       ├── v7_builtin_takeover.c       # builtin 接管（L6 出口）
-│       ├── zread.c.v7poc               # bash 线骨架注入（读取层劫持）
-│       ├── crypto_isa.h                # ISA 层密码学
-│       ├── xtrace_kill.py              # 调试通道剥离
-│       ├── elf_anti_disasm.py          # 抗反汇编后处理
-│       └── ...
+│   ├── bash_poc/                       # bash 线 + 两线共享工具
+│   │   ├── isa_hook.c / .py            # 四层令牌化表：C 端翻译 + Python 端插桩
+│   │   ├── anchors.py                  # ★ 锚点表（bash-5.2 / mksh-R59c）
+│   │   ├── v7_builtin_takeover.c       # builtin 接管（L6 出口）
+│   │   ├── zread.c.v7poc               # bash 线骨架注入（读取层劫持）
+│   │   ├── v7_embed.py                 # 加密嵌入（载荷无关，两线共用）
+│   │   ├── crypto_isa.h                # ISA 层密码学
+│   │   ├── xtrace_kill.py              # 调试通道剥离
+│   │   ├── elf_anti_disasm.py          # 抗反汇编后处理
+│   │   └── ...
+│   └── mksh_poc/                       # mksh 线（与 bash_poc/ 平级）
+│       ├── v7mksh_build.sh             # mksh 线一键构建（先建解释器 → 再改写脚本）
+│       ├── v7_builtin_takeover_mksh.c  # builtin 接管（L6 出口）
+│       ├── v7_shf_inject_mksh.c        # shf_open() 骨架注入（打开层劫持）
+│       └── v7core_mksh.c               # v7c_* 包装层（8 个非 static 符号）
 ├── tools/
 │   ├── v6_lint.py                      # V6 混淆前兼容性检查（含 41 项自测）
 │   ├── v6_pm_diag.sh                   # 运行期指纹诊断
@@ -280,7 +301,7 @@ ShellVMP/
 |---|---|---|
 | **V6 混淆器** | ✅ 稳定 | 双架构（x86_64 / aarch64）验证；32 项集成测试 |
 | **V7 ELF 封装** | ✅ 稳定 | 反调试 / 流式解密 / 内存擦除；退出码分类 |
-| **V7-ISA 令牌化** | 🧪 PoC | bash 线 L1-L4 已通、L6 部分完成；**mksh 线 L1-L4 插桩已通**（构建可用），但**打包能力未移植**（三件套 + L6），见 [`BUILD_MKSH.md`](docs/BUILD_MKSH.md) |
+| **V7-ISA 令牌化** | ✅ 可用 | **bash 线 L1-L4 + L6 生产可用**；**mksh 线 L1-L4 + L6 已通，且已可一条命令打包**（C1/C2/C3，提交 `babf886`）。未做：跨架构实测、`V7_WRAP` 接入（C4）。见 [`BUILD_MKSH.md`](docs/BUILD_MKSH.md) |
 | **VMP 对接** | 🧪 工具就绪 | `vmp_apply.py` 逐函数验证闭环；受限于 NEON 约束，**收益有限**（见文档） |
 | **Python / Lua 移植** | 📋 方法论已备 | 机制可移植性分析完成，待实现 |
 
@@ -306,7 +327,7 @@ ShellVMP/
 |---|---|
 | ① **源脚本是什么方言**（你拿什么进来保护） | bash ✅ 原生；POSIX / dash ✅ 子集直接收；mksh ⚠️ 接近（4 个构造 + 4 处语义分叉，清单见 [`docs/SHELL_TARGETS.md`](docs/SHELL_TARGETS.md)）；zsh ⚠️ 需语义审计降级（**数组 1-based**、word splitting 等，审计器制作中） |
 | ② **产物由谁执行**（目标环境靠哪个解释器跑） | **V7 线：产物自带内嵌静态 bash（`V7_SELF=1`）→ 不依赖目标环境装了什么 shell**，任何能跑 ELF 的 Linux / Android 都行。V6 线：靠环境的 shell，见下方实测矩阵 |
-| ③ **要不要 C 层插桩**（V7-ISA 魔改解释器） | 补丁已随本仓库分发、构建脚本齐全，**对使用者透明**。bash-5.2 生产链 ✅（[`BUILD.md`](docs/BUILD.md)）；mksh-R59c 四层插桩 ✅ 构建可用，**但打包能力未移植**（[`BUILD_MKSH.md`](docs/BUILD_MKSH.md)）；其余冻结（自动发现工具链抽为子仓库 `sh-hook/`） |
+| ③ **要不要 C 层插桩**（V7-ISA 魔改解释器） | 补丁已随本仓库分发、构建脚本齐全，**对使用者透明**。bash-5.2 生产链 ✅（[`BUILD.md`](docs/BUILD.md)）；**mksh-R59c 四层插桩 + 三件套 + L6 全通，已可打包**（[`BUILD_MKSH.md`](docs/BUILD_MKSH.md)）；其余冻结（自动发现工具链抽为子仓库 `sh-hook/`） |
 
 > **一句话**：如果你接受默认形态——产物**内嵌解释器分发**——那么 bash / POSIX / dash / mksh / zsh 来源的脚本（经收敛审计）都能保护，产物跑在**任何** Linux / Android 上，**目标环境装什么 shell 与你无关**。
 > 只有当你要求产物必须用目标环境的系统 shell 执行（例如 Android `/system/bin/mksh`，省去内嵌解释器的几 MB 体积）时，才需要关心下面这张矩阵。
@@ -326,11 +347,11 @@ ShellVMP/
 
 ### 自己编译各 shell 的 C 层补丁
 
-V7-ISA 的 C 层补丁（bash 生产链已通；**mksh 四层插桩 L1-L4 已实装并验证、
-构建可用**，但 C 层三件套与 L6 未移植 ⇒ 打包能力未通 —— 完整状态与构建流程见
+V7-ISA 的 C 层补丁（bash 生产链已通；**mksh 线四层插桩 + 三件套 + L6 全部实装并验证，
+已可通过 `v7/v7_build.sh` 一条命令打包** —— 完整状态与构建流程见
 [`docs/BUILD_MKSH.md`](docs/BUILD_MKSH.md)），
-逐条注入步骤、三个 Android libc 线的取舍、以及踩过的坑全部整理在
-**[`docs/BUILD_PER_SHELL.md`](docs/BUILD_PER_SHELL.md)**。
+逐条注入步骤、两条线的三处有意差异、三个 Android libc 线的取舍、以及踩过的坑全部整理在
+**[`docs/BUILD_PER_SHELL.md`](docs/BUILD_PER_SHELL.md)** §十。
 
 ### 想再加一个解释器？先看两条路线的对比
 
@@ -361,6 +382,7 @@ V7-ISA 的 C 层补丁（bash 生产链已通；**mksh 四层插桩 L1-L4 已实
 
 - **本项目自有代码**（V6 混淆器、V7 ELF 封装、ISA 工具链、文档）：[MIT](LICENSE)。
 - **V7-ISA 涉及的 bash 部分**（`v7/bash_poc/` 的补丁，以及产物内嵌的魔改 bash）：bash 是 **GPLv3+** 软件，**魔改并分发其二进制时，必须向接收方提供对应完整源码**（含补丁与构建脚本）。本仓库已包含全部所需内容——随产物附上仓库链接或源码包即满足义务；下游再分发同样承担此义务。
+- **V7-ISA 涉及的 mksh 部分**（`v7/mksh_poc/` 的补丁，以及产物内嵌的魔改 mksh）：mksh 采用 **MirOS 许可证**（源码头部原文：*"Provided that these terms and disclaimer and all copyright notices are retained or reproduced in an accompanying document, permission is granted to deal in this work without restriction…"*）。**再分发门槛比 GPL 低**：保留版权与许可声明即可，不要求提供完整源码。补丁与构建脚本同样随本仓库提供。
 - **如实披露建议**：产物内嵌的是魔改 bash——这解释了产物体积，也是逆向者的已知起点（解释器可被识别，攻击面见 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)）。向产物接收方说明这一点，与项目的"诚实边界"原则一致。
 
 **免责声明**：本项目是**防御性安全研究**。使用者应只在**自己拥有或被授权**的代码上使用。作者不对任何滥用行为负责。

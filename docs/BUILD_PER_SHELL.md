@@ -3,18 +3,20 @@
 > 本文回答一个问题：**同一套 C 层补丁（`isa_hook.c` + `v7core.c` + `v7_builtin_takeover.c` +
 > `v7_harden.c` + `zread.c.v7poc`）怎么挂到不同的解释器上。**
 >
-> **进度实况（2026-09-15 修订）** —— 此前本文有几处"看起来已打通"的乐观表述，
-> 会让使用者误判进度，已按实测纠正：
+> **进度实况（2026-09-15 二次修订，路线 C / C3 落地后）** —— 此前本文有几处
+> "看起来已打通"的乐观表述，会让使用者误判进度，已按实测纠正：
 >
 > | 能力 | bash | mksh | 说明 |
 > |---|---|---|---|
 > | V6 产物执行 | ✅ | ✅ | 纯 shell，两壳输出逐字节一致（§九） |
-> | ISA 插桩 L1-L4 | ✅ | ✅ | mksh 四点已实装并端到端验证（§4.2.1） |
-> | **C 线三件套**（骨架注入 / v7core / builtin 接管） | ✅ | ❌ **未移植** | 本文件 §五 的"C 线打通"指的是**能力验证**，不是可交付产物 |
-> | **L6 令牌化** | ✅ | ❌ **未移植** | 出口挂在 builtin 接管上，随三件套一起缺 |
+> | ISA 插桩 L1-L4 | ✅ | ✅ | mksh 6 个 op 已实装并端到端验证（§4.2.1 / §十.1） |
+> | **C 线三件套**（骨架注入 / v7core / builtin 接管） | ✅ | ✅ **已移植** | mksh 线走 `shf_open()` **打开层劫持**（§十.2）；本文件 §五 的"C 线打通"是最初的能力验证 |
+> | **L6 令牌化** | ✅ | ✅ **已移植** | 出口在 `v7/mksh_poc/v7_builtin_takeover_mksh.c` |
+> | **一条命令出产物** | ✅ | ✅ | `V7_MODE=mksh V7_MKSH_SRC=./mksh-src bash v7/v7_build.sh in.sh out.mksh` |
 >
-> 也就是说：**mksh 目前能跑 V6 产物和 ISA 改写，但还不能作为 bash 线那种
-> "魔改解释器"来打包保护。** 补齐工作见 §十（路线 C 移植计划）。
+> 也就是说：**mksh 现在能作为 bash 线那种"魔改解释器"打包保护脚本了。**
+> 移植过程、三处有意差异与验收数据见 §十。**未做**：跨架构（aarch64）实测、
+> `V7_WRAP` 接入（属 C4）。
 > 其它解释器按各自的 builtin 注册机制如法炮制。libc 侧 Android 只有 bionic
 > 一条路能走通，见 §4。
 
@@ -60,9 +62,14 @@ bash v7/v7_build.sh app.sh app.bash
 
 | 入口 | 定位 | 注意 |
 |---|---|---|
-| `v7/v7_build.sh` | ★ **统一入口** | 支持两种模式；认 `V7_MODE=bash\|elf`、`V7_WRAP`、`V7_KEEP_STAGE`、`V7_ISA_PARAM` |
+| `v7/v7_build.sh` | ★ **统一入口** | 支持**三种**模式；认 `V7_MODE=bash\|mksh\|elf`、`V7_WRAP`、`V7_KEEP_STAGE`、`V7_ISA_PARAM` |
 | `v7/bash_poc/v7bash_build.sh` | bash 线内部、**口令专用** | 日志里那句"离线分发模式"是继承下来的样板文字，它**不实现白盒** |
+| `v7/mksh_poc/v7mksh_build.sh` | mksh 线内部（r35） | 四段式：**先建解释器 → 再改写脚本**（与 bash 线顺序相反，见 §10.6） |
 | `v7/bash_poc/build_poc.sh` | 在 bash 源码树里**重建改过的 bash** | 唯一正确的重编入口，它会把下面所有注入做全 |
+
+> **`V7_MODE` 可省略**：按输出后缀推断 —— `*.bash` → bash 线、`*.mksh` → mksh 线、
+> 其余 → elf 线。`*.sh` 三线都可能产出，此时看 `V7_MKSH_BIN`/`V7_MKSH_SRC`
+> 或 `V7_BASH_BIN`/`V7_SRC` 的设定（mksh 优先判定）。
 
 ---
 
@@ -136,13 +143,21 @@ mksh 的保留字识别比 bash 干净：不是宏、不是编译期生成的数
 | 识别入口 | `CHECK_FOR_RESERVED_WORD` **宏**，两处展开 | `lex.c` **单点** `ktsearch` |
 | 陷阱 | 旁边有形态酷似的**死函数** `find_reserved_word` | 无 |
 
-mksh 锚点集的三个插桩点（`anchors.py` 的 `MKSH_R59C`）：
+mksh 锚点集的插桩点（`anchors.py` 的 `MKSH_R59C`）—— **实测共 6 个 op**，
+其中 3 个是 ISA 四层，另 3 个是 **C1/C2 的挂载点**（这是勘察阶段没料到的，
+详见 [`BUILD_MKSH.md`](BUILD_MKSH.md) §七）：
 
 | 层 | 文件 | 位置 | 作用 |
 |---|---|---|---|
 | **L3** | `lex.c` | `memset(dp, 0, …)` 之后、`if (*ident != '\0' && (cf & (KEYWORD \| ALIAS)))` 之前 | 保留字还原。此刻 `ident` 已补零、即将被 `hash()`/`ktsearch` 消费 |
 | **L1/L2** | `exec.c` | `findcom()` 入口 | 命令词还原。**findcom 是 mksh 命令解析的唯一汇聚点**（builtins / functions / taliases / search_path 四路都在这），单点全覆盖 |
 | **L4** | `exec.c` | `com_ex` 的 `ap = (const char **)up;` 之后 | argv 全词路径常量还原（含 `ap[0]`） |
+| **C1** | `main.c` | extern 声明 + `mkshbuiltins[]` 注册循环之后 | 初始化挂载 + builtin 接管（L6 出口） |
+| **C2** | `shf.c` | `shf_open()` 入口 | 骨架密文注入层（打开层劫持） |
+
+> ⚠️ 因此**插桩与拷 C 文件是强耦合的**：`isa_hook.py --interp mksh-R59c --srcdir`
+> 一跑就同时落 ISA 四层 **和** C1/C2 挂载点。只插桩不拷三个 `*_mksh.c`
+> → 必然 `undefined reference`。
 
 **两条硬约束（源码考古结论，改前必读）**：
 
@@ -217,12 +232,10 @@ sed -i 's|bashgetopt\.o complete\.o|bashgetopt.o complete.o v6openssl.o|' builti
 mksh 比 bash 好挂得多：**源码约 3 万行**（bash 约 150 万行），且自带
 `TARGET_OS=Android` 原生路径。
 
-> ⚠️ **本节说的是"C 层能力验证"，不是"可交付产物"。**
-> 下面 §5.2 的实测证明的是：**在 mksh 里挂自定义 builtin、劫持命令分发是可行的**，
-> 以及 **V6 产物在 mksh 下与 bash 输出逐字节一致**。
-> 但 bash 线的三件套（`zread.c.v7poc` 骨架注入 / `v7core.c` / `v7_builtin_takeover.c`
-> 的 L6 接管）**尚未移植到 mksh** ⇒ mksh 目前**不能**作为魔改解释器打包。
-> 移植计划见 §十。
+> **本节已更新（路线 C / C3 落地后）**：下面 §5.2 是最初的**能力验证**
+> （证明"在 mksh 里挂自定义 builtin、劫持命令分发"可行）；三件套的**正式移植**
+> 见 §十，**已完成** ⇒ mksh 现在**可以**作为魔改解释器打包受保护脚本。
+> 一条命令：`V7_MODE=mksh V7_MKSH_SRC=./mksh-src bash v7/v7_build.sh in.sh out.mksh`。
 
 ### 5.1 关键差异
 
@@ -253,7 +266,7 @@ S01 begin / S02 obfuscator / S03 信号=0 / S04 a,b,c / S05 has "quotes" and $va
 S06 end / power by haothtrteen / T33 done / over
 ```
 
-### 5.3 挂载骨架
+### 5.3 挂载骨架（**最初的 PoC 形态**，已被 §十 的正式实现取代）
 
 ```c
 /* main.c：紧跟在 mkshbuiltins[] 注册循环之后 */
@@ -404,17 +417,31 @@ v7_build.sh 日志中应出现 `分发模式 : 离线分发模式（白盒编码
 
 **目标**：让 mksh 成为和 bash 同级的"魔改解释器"，可打包受保护脚本（含 L6 令牌化）。
 
-### 10.1 三件套与 mksh 挂载点（勘察结论，2026-09-15）
+> **状态：C1 / C2 / C3 已完成**（提交 `3829537` / `2c1098a` / `babf886`）。
+> mksh 线**已可一条命令出产物**。剩余 C4（`V7_WRAP` 接入 + 跨架构实测）。
 
-| 组件 | bash 挂点 | **mksh 挂点** | 难度 |
-|---|---|---|---|
-| **① builtin 接管**（L6 出口） | `shell.c` `shell_initialize()` 后；劫持静态数组 `shell_builtins[].function` | **`main.c` `mkshbuiltins[]` 注册循环之后**（L311-315 循环体结束处）；用 mksh 公开 API `builtin(name, func)` 注册，或 `ktsearch(&builtins, name, hash(name))` 取回条目改 `func` 字段 | **易** |
-| **② 脚本注入**（骨架交付） | `lib/sh/zread.c` 整文件替换（读层劫持） | **`shf_open()`（`shf.c:51`）打开层劫持** | **中** |
-| **③ 初始化挂载** | `shell_initialize()` 之后调 `v7_builtin_takeover_install()` + `v7_harden_install()` | 与 ① 同点（`main.c` builtin 循环后），外加 `v7_isa_init()` 懒装载 | **易** |
+### 10.1 三件套与 mksh 挂载点（勘察结论 → **已落地**）
+
+| 组件 | bash 挂点 | **mksh 挂点** | 难度 | 落地文件 | 状态 |
+|---|---|---|---|---|---|
+| **① builtin 接管**（L6 出口） | `shell.c` `shell_initialize()` 后；劫持静态数组 `shell_builtins[].function` | **`main.c` `mkshbuiltins[]` 注册循环之后**（L311-315 循环体结束处）；用 mksh 公开 API `builtin(name, func)` 注册，或 `ktsearch(&builtins, name, hash(name))` 取回条目改 `func` 字段 | **易** | `v7/mksh_poc/v7_builtin_takeover_mksh.c` | ✅ |
+| **② 脚本注入**（骨架交付） | `lib/sh/zread.c` 整文件替换（读层劫持） | **`shf_open()`（`shf.c:51`）打开层劫持** | **中** | `v7/mksh_poc/v7_shf_inject_mksh.c` | ✅ |
+| **③ 初始化挂载** | `shell_initialize()` 之后调 `v7_builtin_takeover_install()` + `v7_harden_install()` | 与 ① 同点（`main.c` builtin 循环后），外加 `v7_isa_init()` 懒装载 | **易** | 同上（`main.c` 挂载点由锚点表内置） | ✅ |
+
+> **落地时比勘察多了一个文件**：`v7core_mksh.c`。
+> 它是 **8 个 `v7c_*` 符号**的非 static 包装层
+> （`v7c_scrypt_kdf` / `v7c_keys` / `v7c_stream_init` / `v7c_stream_xor` /
+> `v7c_stream_wipe` / `v7c_tag` / `v7c_ct_eq` / `v7c_wb_decode`）。
+> 因为 `crypto_isa.h` 里对应函数是 `static`（那份头是 `isa_hook.c` 的专用副本，
+> 保留 static 可避免与 `v7core.o` 冲突 `duplicate symbol`）⇒ 跨翻译单元**不可见**，
+> 少了它会有 **8 条 `undefined reference`**。这是勘察阶段没预见的，见 §10.6。
 
 **① 的可行性已被实测证明**（§5.2）：`builtin("v7probe", c_v7probe)` 一行即可注册，
 `type v7probe` 显示 `is a shell builtin`。mksh 的 `call_builtin()`（`exec.c:36/707`）
 是统一调用点，接管后无需改动分发逻辑。
+
+**② 的最终形态**（详见 §10.2）：`shf_open()` 入口判断目标是否是受保护脚本
+→ 现场解密进 **memfd** → 返回 memfd 的 shf。**读取语义一行不改**。
 
 ### 10.2 ② 脚本注入：mksh 比 bash 更好做，但要改设计
 
@@ -460,21 +487,71 @@ zread 边读边解密，明文"逐块过境、即写即抹"。
 > 若采用 §10.2 的 `shf_open()` 方案，这条阻塞项**可能自动消失**：
 > 让 mksh 从一个**完整解密好的 memfd** 读取，而不是从慢速 pipe 流式读取。
 
-### 10.4 实施顺序（建议）
+### 10.4 实施顺序与**实测验收结果**
 
-| 步 | 内容 | 验收 |
-|---|---|---|
-| C1 | ③ 初始化挂载 + ① builtin 接管（`builtin()` 注册探针 + L6 出口） | mksh 内 `v7probe` 可达；L6 表在场时可解密令牌 |
-| C2 | ② `shf_open()` 注入层 | mksh 能直接跑受保护的骨架文件 |
-| C3 | 接入 `v7_build.sh`（mksh 线开关） | 一条命令出 mksh 线产物 |
-| C4 | 端到端 + 与 bash 线逐字节对拍 | 双壳产物输出一致 |
+| 步 | 内容 | 验收 | 结果 |
+|---|---|---|---|
+| C1 | ③ 初始化挂载 + ① builtin 接管（`builtin()` 注册探针 + L6 出口） | mksh 内 `v7probe` 可达；L6 表在场时可解密令牌 | ✅ `3829537` |
+| C2 | ② `shf_open()` 注入层 | mksh 能直接跑受保护的骨架文件 | ✅ `2c1098a` —— 端到端对拍一致；官方回归 **535 pass / 33 fail**，与未插桩基线**逐项一致 ⇒ 零副作用** |
+| C3 | 接入 `v7_build.sh`（mksh 线开关） | **一条命令出 mksh 线产物** | ✅ `babf886` —— 10 项验收全过，见下 |
+| C4 | 端到端 + 与 bash 线逐字节对拍 + `V7_WRAP` | 双壳产物输出一致 | 待做 |
+
+**C3 的关键实测数据**：
+
+| 证据 | 结果 |
+|---|---|
+| 一条命令 | `V7_MODE=mksh V7_MKSH_SRC=<树> bash v7/v7_build.sh in.sh out.mksh` → rc=0 |
+| 忠实复现手工流程 | `[1/3]` 产出的改版 mksh 与 C2 手工产物 **`cmp` 逐字节一致**（347888 B） |
+| 字节账目 | `403238 − 347888 = 55350 = 骨架 + 812`；尾部 `len` 字段独立读出亦为 55350 |
+| 磁盘无明文 | ✅ |
+| 篡改产物 | rc=114（认证失败） |
+| 忘记带表 | 令牌 `v7p__gngvbzsi9` **原样漏出**（静默降级，非崩溃） |
+| ISA 套件 | `test_isa_hook_table.sh` **PASS=18 FAIL=0**；`v7_isa.py selftest` ALL GREEN |
+| 幂等 | 注意 ISA 表**刻意随机化** + L6 令牌名每构建随机 ⇒ **不能用产物体积/hash 判幂等**，要比"改写版脚本 + 运行输出" |
 
 ### 10.5 交付形态（面向使用者）
 
 使用者的认知路径应当只有三步：
 
 1. **读文档知道能干什么** —— "你的 shell 脚本可以用 bash 或 mksh 魔改解释器打包保护"；
-2. **按 shell 选目录** —— bash 线用 `v7/`，mksh 线用 `v7/mksh/`（待建）；
+2. **按 shell 选目录** —— bash 线用 `v7/bash_poc/`，mksh 线用 `v7/mksh_poc/`；
+   两者都经 `v7/v7_build.sh` 这一个入口进入（`V7_MODE` 开关或按输出后缀自动判定）；
 3. **自己构建** —— 目录需**自包含**：源码树获取脚本 + 补丁 + 构建脚本 + 一键入口。
 
 > 每个 shell 目录必须能独立走通"下载 → 构建 → 得到产物"，不依赖仓库其它部分。
+> mksh 线的完整分发清单见 [`BUILD_MKSH.md`](BUILD_MKSH.md) §八。
+
+**为什么是 `v7/mksh_poc/` 而不是 `v7/mksh/`**：与既有的 `v7/bash_poc/` **平级**，
+保持"每个 shell 一个 `*_poc/` 目录"的对称。而**共享工具**（`isa_hook.py` /
+`anchors.py` / `isa_hook.c` / `crypto_isa.h` / `v7_embed.py`）仍留在 `bash_poc/` 下
+—— 它们是**两线共用**的，`v7mksh_build.sh` 以 `$SELF_DIR/../bash_poc/xxx` 引用。
+
+> 另一种布局是拆成 `bash/v7/bash_poc` + `mksh/v7/mksh_poc`（两个命名空间）。
+> **未选**：要同步改 `tools/v7_isa.py` 的路径常量、`v7_build.sh` 3 处、
+> `tests/test_isa_hook_table.sh` 2 处、README 结构树，以及 `bash_poc` 内部每个
+> 脚本的 `../../` 相对深度 —— **漏一处就是静默路径失效**，收益不值。
+
+### 10.6 与 bash 线的三处**有意差异**（照抄必踩）
+
+| # | 差异 | bash 线 | **mksh 线** | 为什么 |
+|---|---|---|---|---|
+| 1 | **构建顺序** | 先改写脚本 → 再构建解释器 | **先建解释器 → 再改写脚本** | 改版 bash 由**调用者提供**；改版 mksh 由**本脚本现场构建**，ISA 的 `-n` 预检必须用刚出炉的二进制。照抄会死锁在"预检时 mksh 还不存在" |
+| 2 | **劫持层次** | 读取层（`zread.c`） | **打开层**（`shf_open()`） | 全树仅 5 个 `shf_open` 调用者（只有 2 个是脚本入口），且**顺带绕开 pipe 短读阻塞项** |
+| 3 | **运行契约** | 同样要带 argv | 同样要带 argv（`/dev/null`） | 不带则 mksh 进 **stdin 模式（FSTDIN）**，`main.c:532` 的 `shf_open` 分支不被走到 → **静默 rc=0 零输出**。这是契约不是缺陷 |
+
+**另外两个容易踩的点**：
+
+- **C 文件必须改名进源树**：`v7core_mksh.c → v7core.c`、`v7_builtin_takeover_mksh.c
+  → v7_builtin_takeover.c`、`v7_shf_inject_mksh.c → v7_shf_inject.c`
+  —— 锚点表按改名后的名字 `#include` / 引用符号。不改名 = `cc1: fatal error: No such file`。
+- **`SRCS` 幂等判据要逐项**：本机不存在纯净 R59c 树（所有测试树都被污染，含 `isa_hook.c`），
+  所以 `Build.sh` 的 `SRCS` 有**三种形态**。判据写"含任一文件就整体跳过"会翻车
+  （局部状态的树上另两个文件永远加不进去）⇒ 必须**逐项判断缺哪个加哪个**。
+
+### 10.7 未做 / 已知遗留
+
+| 项 | 状态 |
+|---|---|
+| **跨架构（aarch64）实测** | 代码路径已就位（含 qemu 缺失时**响亮失败 + 三条出路**），但本次仅 x86_64 同架构验证，**未实测** |
+| **`V7_WRAP` 自释放包装** | 尚未接入 mksh 线（属 C4） |
+| **与 bash 线产物对拍** | 两线产物形态不同（不同解释器），应在**运行输出**层面对拍（属 C4） |
