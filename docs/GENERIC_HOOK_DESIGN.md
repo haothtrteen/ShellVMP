@@ -387,11 +387,19 @@ python3 ../sh-hook/discover_tables.py \
 
 | 步 | 内容 | 状态 |
 |---|---|---|
-| G1 | 保留字表发现（规则 1） | ✅ **已完成** |
-| G2 | 查表函数发现（规则 2） | 📋 待做 |
+| G1 | 保留字表发现（规则 1） | ✅ 已完成（sh-hook `discover_tables.py`） |
+| G2 | 查表函数发现（规则 2） | ✅ **已完成（2026-09，sh-hook `discover_callers.py`）** |
 | G3 | 主路径裁决 + 探针（规则 3） | 📋 待做（**最有价值**） |
 | G4 | 人工核对 → 角色映射表 | 📋 待做 |
 | G5 | 接进 `anchors.py` | 📋 待做 |
+
+**G2 实测摘要**（详见 sh-hook `docs/DESIGN.md` §4.5）：引用图谱四类
+（decl/macro/func-ref/caller）+ 容器链自动展开（运行时哈希型）。
+三壳与手工分析交叉验证一致：bash 主路径候选 = 宏展开 `read_token_word`
+两处（与本仓库当年插桩选择一致，y.tab.c:5288 注释佐证）；mksh 容器链
+`tokentab→keywords` → `yylex`(lex.c:1046)；dash `findkwd` 两个调用点。
+修正一处旧认知：`find_reserved_word` 是旁路（print_cmd.c:1398 一处调用）
+而非纯死代码——主路径裁决仍归 G3。
 
 > **G3 是"通用 hook"的核心价值所在** —— 它能自动避开
 > `PITFALLS.md` §5.1 那个 `find_reserved_word` 死代码坑。
