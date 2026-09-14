@@ -3,9 +3,20 @@
 > 本文回答一个问题：**同一套 C 层补丁（`isa_hook.c` + `v7core.c` + `v7_builtin_takeover.c` +
 > `v7_harden.c` + `zread.c.v7poc`）怎么挂到不同的解释器上。**
 >
-> 结论先行：**bash 与 mksh 两棵树都已实测打通**（产物与 plaintext 逐字节一致）；
-> 其它解释器按各自的 builtin 注册机制如法炮制。libc 侧 Android 只有 bionic 一条
-> 路能走通，见 §4。
+> **进度实况（2026-09-15 修订）** —— 此前本文有几处"看起来已打通"的乐观表述，
+> 会让使用者误判进度，已按实测纠正：
+>
+> | 能力 | bash | mksh | 说明 |
+> |---|---|---|---|
+> | V6 产物执行 | ✅ | ✅ | 纯 shell，两壳输出逐字节一致（§九） |
+> | ISA 插桩 L1-L4 | ✅ | ✅ | mksh 四点已实装并端到端验证（§4.2.1） |
+> | **C 线三件套**（骨架注入 / v7core / builtin 接管） | ✅ | ❌ **未移植** | 本文件 §五 的"C 线打通"指的是**能力验证**，不是可交付产物 |
+> | **L6 令牌化** | ✅ | ❌ **未移植** | 出口挂在 builtin 接管上，随三件套一起缺 |
+>
+> 也就是说：**mksh 目前能跑 V6 产物和 ISA 改写，但还不能作为 bash 线那种
+> "魔改解释器"来打包保护。** 补齐工作见 §十（路线 C 移植计划）。
+> 其它解释器按各自的 builtin 注册机制如法炮制。libc 侧 Android 只有 bionic
+> 一条路能走通，见 §4。
 
 ---
 
@@ -112,9 +123,9 @@ bash-5.2 锚点集的四个插桩点（对应 `isa_hook.c`）：
 | `shell.c` | `shell_initialize()` 之后 | 自定义 builtin 接管 + 抗 dump 加固安装点 |
 
 **加一个新解释器 = 往 `anchors.py` 填一组 `ANCHOR_SET`**，不用改 `isa_hook.py`。
-已有一个**试验性** mksh 锚点集（`mksh-R59c`，只做 L3，见下 §4.2.1）。
+mksh 的锚点集（`mksh-R59c`）已做到**四层全覆盖**，见 §4.2.1。
 
-#### 4.2.1 mksh 锚点集（试验性，B1）
+#### 4.2.1 mksh 锚点集（四层已实装）
 
 mksh 的保留字识别比 bash 干净：不是宏、不是编译期生成的数组，而是 `lex.c` 里
 **一句** `ktsearch(&keywords, ident, h)` 查**运行期哈希表**。
@@ -125,21 +136,41 @@ mksh 的保留字识别比 bash 干净：不是宏、不是编译期生成的数
 | 识别入口 | `CHECK_FOR_RESERVED_WORD` **宏**，两处展开 | `lex.c` **单点** `ktsearch` |
 | 陷阱 | 旁边有形态酷似的**死函数** `find_reserved_word` | 无 |
 
-插桩点选在 `memset(dp, 0, (ident + IDENT) - dp + 1);` 之后、
-`if (*ident != '\0' && (cf & (KEYWORD | ALIAS))) {` 之前 ——
-此刻 `ident` 已补零完成、即将被 `hash()`/`ktsearch` 消费。
+mksh 锚点集的三个插桩点（`anchors.py` 的 `MKSH_R59C`）：
 
-**状态：只验证了「锚点表能定位并正确插入 + 编译通过 + 行为不变」，
-尚未接入构建、尚未实现真正的翻译函数。** 用法：
+| 层 | 文件 | 位置 | 作用 |
+|---|---|---|---|
+| **L3** | `lex.c` | `memset(dp, 0, …)` 之后、`if (*ident != '\0' && (cf & (KEYWORD \| ALIAS)))` 之前 | 保留字还原。此刻 `ident` 已补零、即将被 `hash()`/`ktsearch` 消费 |
+| **L1/L2** | `exec.c` | `findcom()` 入口 | 命令词还原。**findcom 是 mksh 命令解析的唯一汇聚点**（builtins / functions / taliases / search_path 四路都在这），单点全覆盖 |
+| **L4** | `exec.c` | `com_ex` 的 `ap = (const char **)up;` 之后 | argv 全词路径常量还原（含 `ap[0]`） |
+
+**两条硬约束（源码考古结论，改前必读）**：
+
+1. `search_path()` 内 `return (name)` 的返回值**可能与入参同指针**，而 `findcom`
+   据此做 `npath.ro != name` 的判等释放 ⇒ **绝不写 `name` 指向的内容**，只重绑定
+   形参指针。同理 `ap[0]` 之后还要 `execve`，也不能就地改内容。
+2. L1/L2 用**栈缓冲 `char[IDENT+1]` 零堆分配**（IDENT=64，别名 14 字符、真名
+   ≤8 字符）。`findcom` 有 4 处 `return` 出口，栈缓冲天然规避漏放。
+
+**状态：四层实装并端到端验证通过**（`isa_itest` 6/6；3 个 seed × 6 = 18/18；
+mksh 官方回归套件失败清单与**未插桩基线逐项一致** ⇒ 插桩零副作用）。
 
 ```sh
 python3 $HERE/isa_hook.py --interp mksh-R59c --srcdir <mksh源码树>
-sh Build.sh -r        # 已验证：编译成功，基本语法功能与未插桩版一致
+sh Build.sh -r        # 已验证：编译一次通过
 ```
 
-> ⚠️ **已知风险（未解决）**：mksh 的 `ident` 是**栈上定长数组**（上界为编译期
-> 常量 `IDENT`）。ISA 别名长于原名时存在溢出风险。这是移植路线的**止损点**，
-> 详见 [`C_LAYER_ROUTE_COMPARE.md`](C_LAYER_ROUTE_COMPARE.md) §A.6。
+验证方法（需 mksh 二进制 + 表）：
+
+```sh
+python3 tools/v7_isa.py gen --seed 20260914 -o /tmp/t.bin --json /tmp/t.json
+python3 tools/isa_itest.py --bash <mksh> --table /tmp/t.bin --json /tmp/t.json
+# --l3-only 只验保留字层（用于 L1/L2/L4 尚未实装的解释器冒烟）
+```
+
+> **`ident` 溢出风险已消解**：mksh 的 `ident` 是栈上定长数组（`char[IDENT+1]`）。
+> 生成器产出的别名恒为 14 字符、真名 ≤8 字符，且插桩侧带 `v7l <= IDENT` 边界
+> 检查（超长放弃翻译、原名照跑）⇒ 不存在溢出路径。
 
 ### 4.3 Makefile 注入（**必须三处齐全**）
 
@@ -181,10 +212,17 @@ sed -i 's|bashgetopt\.o complete\.o|bashgetopt.o complete.o v6openssl.o|' builti
 
 ---
 
-## 五、mksh 树（R59c，已实测打通）
+## 五、mksh 树（R59c）
 
 mksh 比 bash 好挂得多：**源码约 3 万行**（bash 约 150 万行），且自带
 `TARGET_OS=Android` 原生路径。
+
+> ⚠️ **本节说的是"C 层能力验证"，不是"可交付产物"。**
+> 下面 §5.2 的实测证明的是：**在 mksh 里挂自定义 builtin、劫持命令分发是可行的**，
+> 以及 **V6 产物在 mksh 下与 bash 输出逐字节一致**。
+> 但 bash 线的三件套（`zread.c.v7poc` 骨架注入 / `v7core.c` / `v7_builtin_takeover.c`
+> 的 L6 接管）**尚未移植到 mksh** ⇒ mksh 目前**不能**作为魔改解释器打包。
+> 移植计划见 §十。
 
 ### 5.1 关键差异
 
@@ -333,3 +371,84 @@ V7_SELF=1 sh app.bash /dev/null
 
 v7_build.sh 日志中应出现 `分发模式 : 离线分发模式（白盒编码 seed）`，
 且运行期**无 `command not found`、无 ISA 报错**。
+
+---
+
+## 十、路线 C：把 C 线三件套移植到 mksh
+
+**目标**：让 mksh 成为和 bash 同级的"魔改解释器"，可打包受保护脚本（含 L6 令牌化）。
+
+### 10.1 三件套与 mksh 挂载点（勘察结论，2026-09-15）
+
+| 组件 | bash 挂点 | **mksh 挂点** | 难度 |
+|---|---|---|---|
+| **① builtin 接管**（L6 出口） | `shell.c` `shell_initialize()` 后；劫持静态数组 `shell_builtins[].function` | **`main.c` `mkshbuiltins[]` 注册循环之后**（L311-315 循环体结束处）；用 mksh 公开 API `builtin(name, func)` 注册，或 `ktsearch(&builtins, name, hash(name))` 取回条目改 `func` 字段 | **易** |
+| **② 脚本注入**（骨架交付） | `lib/sh/zread.c` 整文件替换（读层劫持） | **`shf_open()`（`shf.c:51`）打开层劫持** | **中** |
+| **③ 初始化挂载** | `shell_initialize()` 之后调 `v7_builtin_takeover_install()` + `v7_harden_install()` | 与 ① 同点（`main.c` builtin 循环后），外加 `v7_isa_init()` 懒装载 | **易** |
+
+**① 的可行性已被实测证明**（§5.2）：`builtin("v7probe", c_v7probe)` 一行即可注册，
+`type v7probe` 显示 `is a shell builtin`。mksh 的 `call_builtin()`（`exec.c:36/707`）
+是统一调用点，接管后无需改动分发逻辑。
+
+### 10.2 ② 脚本注入：mksh 比 bash 更好做，但要改设计
+
+**bash 的做法**：`zread.c` 在**读取层**劫持 —— 解释器读到的是密文，
+zread 边读边解密，明文"逐块过境、即写即抹"。
+
+**mksh 的机会**：`shf_open()` 是**统一的脚本打开点**，全树只有 5 个调用者，
+其中只有 2 个是脚本入口：
+
+| 调用点 | 用途 | 是否需接管 |
+|---|---|---|
+| `main.c:532` | 主脚本（argv 指定） | ✅ 是 |
+| `main.c:758` | `include()` —— `source` / `.` 内嵌脚本 | ✅ 是 |
+| `eval.c:1561` | 重定向的输入文件 | ❌ 否 |
+| `histrap.c:320` | 历史文件 | ❌ 否 |
+| `main.c:2066` | 其他读取 | ❌ 否 |
+
+在 `shf_open()` 入口加一层判断：若 `name` 是受保护的脚本路径（或环境变量
+指定的 fd），就**换成解密后的 memfd**，返回它的 shf。**这比 zread 更干净**，
+因为：
+- 只改"打开"这一步，读取语义完全不动 ⇒ **顺带绕开了 pipe 短读问题**（见 §10.3）
+- mksh 的 `shf` 层抽象完好，替换 fd 后所有下游（lex/parse）无感
+
+⚠️ **必须验证的契约**：替换 fd 后 `s->file` / `kshname` / `$0` 的取值，
+以及 `include()` 里 `source = sold` 的恢复逻辑（`main.c:821`）是否受影响。
+
+### 10.3 已定位的阻塞项：elf 线 pipe 短读（需一并解决）
+
+**实测对照**（同一份 68938 字节 V6 骨架，`F_SETPIPE_SZ=4096` + 写端 `O_NONBLOCK`）：
+
+| 执行器 | 结果 |
+|---|---|
+| bash | 收满全部字节 → 8 行输出，rc=0 ✅ |
+| mksh | 首次 write 仅得 **8192 字节**即按文件结束处理 → `no closing quote`，rc=1 ❌ |
+
+**成因**：bash 会持续 `read()` 到 EOF；mksh 把**短读**当 EOF。
+这是**解释器读语义差异**，不是加密逻辑问题（V6 骨架本身双壳无差异，§5.2）。
+
+**两条修法**：
+1. **走落地临时文件交付**（绕过 pipe）—— 改动小，但牺牲"明文永不完整落地"的安全属性；
+2. **改用阻塞写 + 读端消费确认** —— 保住安全模型，但要重做 elfrun 的 pipe 调度。
+
+> 若采用 §10.2 的 `shf_open()` 方案，这条阻塞项**可能自动消失**：
+> 让 mksh 从一个**完整解密好的 memfd** 读取，而不是从慢速 pipe 流式读取。
+
+### 10.4 实施顺序（建议）
+
+| 步 | 内容 | 验收 |
+|---|---|---|
+| C1 | ③ 初始化挂载 + ① builtin 接管（`builtin()` 注册探针 + L6 出口） | mksh 内 `v7probe` 可达；L6 表在场时可解密令牌 |
+| C2 | ② `shf_open()` 注入层 | mksh 能直接跑受保护的骨架文件 |
+| C3 | 接入 `v7_build.sh`（mksh 线开关） | 一条命令出 mksh 线产物 |
+| C4 | 端到端 + 与 bash 线逐字节对拍 | 双壳产物输出一致 |
+
+### 10.5 交付形态（面向使用者）
+
+使用者的认知路径应当只有三步：
+
+1. **读文档知道能干什么** —— "你的 shell 脚本可以用 bash 或 mksh 魔改解释器打包保护"；
+2. **按 shell 选目录** —— bash 线用 `v7/`，mksh 线用 `v7/mksh/`（待建）；
+3. **自己构建** —— 目录需**自包含**：源码树获取脚本 + 补丁 + 构建脚本 + 一键入口。
+
+> 每个 shell 目录必须能独立走通"下载 → 构建 → 得到产物"，不依赖仓库其它部分。
