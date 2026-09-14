@@ -489,11 +489,78 @@ MKSH_ARGV_BODY = MKSH_ARGV_HEAD + (
     "\t\t}\n"
 )
 
+# =============================================================================
+# mksh R59c —— C1：builtin 接管 + 初始化挂载（路线 C）
+# =============================================================================
+#
+# 目标：让 mksh 具备 bash 线三件套里的「builtin 接管」（L6 令牌化出口）
+#      与「初始化挂载」两件能力。
+#
+# 为什么挂在 main.c 的 builtin 注册循环之后：
+#   mksh 的 builtin 是**运行期哈希表** builtins（struct table），
+#   由 main.c 的循环 `builtin(mkshbuiltins[i].name, mkshbuiltins[i].func)`
+#   逐条 ktenter 进去。循环结束 = 表已建全 ⇒ 此时接管才找得到 "echo"。
+#   早于循环会 get_builtin("echo") 返回 NULL（静默不接管）。
+#
+#   与 bash 的差异（挂点语义相同、实现不同）：
+#     bash：shell_initialize() 之后，劫持静态数组 shell_builtins[].function
+#     mksh：builtin 注册循环之后，改哈希表项 tp->val.f
+#
+# 初始化挂载（v7_isa_init 的显式触发）也放这里：
+#   isa_hook.c 的两个翻译入口本来就**懒装载**（首次调用时 v7_isa_init），
+#   所以这一步不是"必需"。但显式初始化有两个好处：
+#     1) 把表解析开销从"首次命令执行"提前到"shell 启动"，行为更可预期；
+#     2) v7_builtin_takeover_install 内部要查 L6 表（v7_isa_has_param_table），
+#        若不先 init 则它自己会懒触发 —— 显式调用只是把顺序写明白。
+#
+# fail-closed（与 bash 线铁律一致）：
+#   v7_builtin_takeover_install 内部先查 v7_isa_has_param_table()，
+#   无 L6 表则**完全不接管** ⇒ 裸 mksh 跑普通脚本行为零变化。
+
+# 声明区锚点：main.c 的 __RCSID 之后挂 extern 声明
+MKSH_MAIN_RCSID = (
+    '__RCSID("$MirOS: src/bin/mksh/main.c,v 1.374 2020/10/01 20:28:54 tg Exp $");\n'
+)
+MKSH_MAIN_DECLS = (
+    "/* V7 C1：builtin 接管 + 初始化挂载（v7/bash_poc/v7_builtin_takeover_mksh.c）。\n"
+    "   extern 声明放这里而非 sh.h，是为了让插桩点集中在一个文件、便于审计。 */\n"
+    "extern void v7_builtin_takeover_install(void);\n"
+    "extern void v7_isa_init(void);\n"
+)
+
+# 挂载点锚点：builtin 注册循环结束、`if (!as_builtin) {` 之前。
+# 取这么长的上下文是因为 `if (!as_builtin) {` 在 main.c 里出现两次（L323/L483），
+# 只用它做锚点会命中错位置 —— 而错位置不会报错，只会静默少接管（极难查）。
+# 前缀 `ccp = builtin_name; as_builtin = true; } }` 是循环体尾部，全文件唯一。
+MKSH_MOUNT_ANCHOR = (
+    "\t\t\tccp = builtin_name;\n"
+    "\t\t\tas_builtin = true;\n"
+    "\t\t}\n"
+    "\t}\n"
+    "\n"
+    "\tif (!as_builtin) {\n"
+)
+MKSH_MOUNT_HEAD = (
+    "/* V7 C1 挂载点（mksh 插桩）：builtin 注册循环之后。\n"
+    "   此刻 builtins 哈希表已建全 ⇒ 接管 echo 才有目标。\n"
+    "   v7_isa_init 先跑（查表开销提前到启动期），随后安装接管；\n"
+    "   无 L6 表时 install 内部直接 return ⇒ 裸 mksh 行为不变。 */\n"
+)
+MKSH_MOUNT_BODY = MKSH_MOUNT_ANCHOR.replace(
+    "\tif (!as_builtin) {\n",
+    MKSH_MOUNT_HEAD +
+    "\tv7_isa_init();\n"
+    "\tv7_builtin_takeover_install();\n"
+    "\n"
+    "\tif (!as_builtin) {\n",
+)
+
 MKSH_R59C = {
     "name": "mksh-R59c",
     "files": {
         "kw": "lex.c",
         "com": "exec.c",
+        "main": "main.c",
     },
     "ops": [
         {
@@ -516,6 +583,20 @@ MKSH_R59C = {
             "kind": "replace",
             "site_old": MKSH_ARGV_ANCHOR_NOINDENT,
             "site_new": MKSH_ARGV_BODY,
+        },
+        {
+            "file": "main",
+            "tag": "main.c 声明区 C1 extern 声明",
+            "kind": "replace",
+            "site_old": MKSH_MAIN_RCSID,
+            "site_new": MKSH_MAIN_RCSID + MKSH_MAIN_DECLS,
+        },
+        {
+            "file": "main",
+            "tag": "main.c builtin 循环后 C1 初始化挂载 + builtin 接管",
+            "kind": "replace",
+            "site_old": MKSH_MOUNT_ANCHOR,
+            "site_new": MKSH_MOUNT_BODY,
         },
     ],
 }
