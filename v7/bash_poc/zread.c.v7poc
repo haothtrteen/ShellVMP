@@ -1,0 +1,795 @@
+/* zread - read data from file descriptor into buffer with retries */
+
+/* Copyright (C) 1999-2020 Free Software Foundation, Inc.
+
+   This file is part of GNU Bash, the Bourne Again SHell.
+
+   Bash is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   Bash is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with Bash.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include <config.h>
+
+#include <sys/types.h>
+
+#if defined (HAVE_UNISTD_H)
+#  include <unistd.h>
+#endif
+
+#include <signal.h>
+#include <errno.h>
+
+#include <fcntl.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <time.h>
+#include <pthread.h>
+
+#if !defined (errno)
+extern int errno;
+#endif
+
+/* =========================================================================
+ * V7 单进程形态（r11）：在 zread 层透明解密「内嵌于自身 ELF 尾部」
+ * 的加密 V6 骨架 + 内建运行时对抗。
+ *
+ * 目标：让 bash 自身成为加载器——内嵌解密器 + 加密骨架，单进程自解密自执行，
+ *       没有父子进程边界（即不存在 elfrun 父进程对 bash 子进程的完全访问权）。
+ *
+ * 激活条件：仅当环境变量 V7_SELF 存在时启用；否则本文件与上游完全一致。
+ *
+ * blob v3 布局（r12：密码学改用与路线 A 同一套 crypto_core.h）：
+ *   [ct][tag 16][salt 16][N 4 LE][wb_table 256][wb_perm 256][wb_mask 256][flags 4][len 4]
+ *   len = ctlen + 812
+ * 口令模式与离线模式**共用同一布局**（口令模式下白盒三表填随机诱饵），
+ * 这样攻击者无法从布局判断某产物是离线分发还是需要口令。
+ *
+ * 运行期流程（v7_init，首次 zread 触发）：
+ *   1. 读末尾 4B → taillen → 定位各字段；
+ *   2a. 口令模式(flags bit0=1)：V7_PASS + salt → scrypt ROMix(N) → seed；
+ *   2b. 离线模式(flags bit0=0)：白盒三表解码 → seed（无需口令，可直接分发）；
+ *   3. seed → v7_keys → kenc/kmac；v7_tag(kmac, ct) 与 tag 常数时间比对，
+ *      失败 exit(114)（口令错误或产物被篡改）；
+ *   4. HMAC-SHA256 密钥流（32B/块，取代 RC4）→ v7_read 逐块供给，
+ *      明文只在 4KB lbuf 驻留；
+ *   5. 运行时对抗（自监控，不依赖父子关系——自 elfrun 移植）：
+ *      anti_frida（maps 特征扫描）+ TracerPid 自检（exit 113）+
+ *      CLOCK_MONOTONIC 冻结近似检测（异常停顿 > 30s → exit 113）+
+ *      反调试④启动时间窗（启动→解密完成 > 3000ms → exit 113；
+ *      V7_VMP_BUILD 构建时关闭，对齐 A 语义）。
+ *
+ * r12 相对 r11 的密码学升级（对齐路线 A）：
+ *   · KDF：HMAC 链 100000 轮 → scrypt-like ROMix（N 默认 131072 → 16MB 内存硬度）
+ *   · 流密码：RC4 → HMAC-SHA256 密钥流（32B/块 CTR）
+ *   · 认证：HMAC-SHA256 32B → v7_tag 截断 16B + 常数时间比对
+ *   · 新增离线分发模式 + 白盒 seed 编码
+ * ========================================================================= */
+#include <stdlib.h>          /* malloc/free：scrypt 的 V 数组走堆分配 */
+
+/* r12 起密码学与路线 A 同源（crypto_core.h）。本文件只消费 v7c_* 入口，
+ * 不 include 全量头——那里 5 个目标函数在 VMP 构建时被去 static，
+ * 两处 include 会产生重复符号。这里只镜像 v7_stream_ctx（三字段结构体，
+ * 与 crypto_core.h 保持同步，若那边改布局必须同步这里）。 */
+typedef struct {
+  unsigned char kenc[32];
+  unsigned long long blk;
+  unsigned char ks[32];
+  size_t ks_pos;
+} v7_stream_ctx;
+
+#define V7_BLOB_OVERHEAD 812   /* tag16 + salt16 + N4 + wb 768 + flags4 + len4 */
+#define V7_WB_SIZE 256         /* 白盒单表字节数 */
+#define V7_FLAG_PASSMODE 1u    /* flags bit0：1=口令模式，0=离线（白盒）模式 */
+#define V7_FREEZE_LIMIT_S 30   /* 单调时钟异常停顿阈值（秒） */
+#define V7_TP_SAMPLE 32        /* TracerPid 抽查间隔（zread 次数） */
+
+/* 反调试④（对齐路线 A elfrun 的 V7_TIME_TRAP）：启动→解密完成一次性时间窗。
+ * t0 在 KDF 之前取，解密完成后统一比较 —— gdb 断点/单步会显著超时。
+ * VMP 构建必须关闭（-DV7_VMP_BUILD=1）：关键函数过 VM 解释器后每字节 XOR
+ * 都要解释执行，解密天然慢 10-100 倍，"VM 解释慢"与"调试器停顿"在该检测下
+ * 不可区分（r10.2 实测误杀自己）。时间侧信道职责由 TracerPid/冻结检测继续承担。
+ * 注意：口令模式 + scrypt 大 N 本身就耗时（x86 N=131072 实测 4.6s > 3s），
+ * 非 VMP 构建请用小 N（4096/16384）或 --vmp 构建（见 bash_poc/README）。 */
+#if defined(V7_VMP_BUILD)
+#  define V7_TIME_TRAP 0
+#else
+#  define V7_TIME_TRAP 1
+#endif
+#define V7_TIME_TRAP_MS 3000ULL   /* 与 A 同阈值：只拦调试级停顿 */
+
+/* ---- 诊断模式（r13 自路线 A elfrun 移植）----------------------------------
+ * 构建时 -DV7_DIAG 才存在。运行时 V7_DIAG 环境变量非空且非 "0" 时，
+ * 向 stderr 输出阶段进度与拒绝原因；生产构建（默认）不定义 V7_DIAG →
+ * 下列宏把诊断代码与**新增**诊断串整体从产物中剔除（反逆向：不给攻击者
+ * "哪层拦截了自己"的反馈渠道）。
+ *
+ * 与既有 `v7: ` 串的关系：那 9 条是**无条件**错误提示（历史实现），
+ * 生产构建由 diag_strip.py 抹掉；本宏新增的 V7DIAG 串只在 -DV7_DIAG 下
+ * 存在，生产构建连符号都不生成，无需 strip 参与。
+ * 判定口径对齐 A：`*e && strcmp(e,"0") != 0`（即 "0" 视为关闭）。 */
+#ifdef V7_DIAG
+static int
+v7_diag_on (void)
+{
+  const char *e = getenv ("V7_DIAG");
+  return e && *e && strcmp (e, "0") != 0;
+}
+#  define V7_LOG(...) do { if (v7_diag_on ()) fprintf (stderr, __VA_ARGS__); } while (0)
+#else
+#  define V7_LOG(...) ((void) 0)
+#endif
+
+#if V7_TIME_TRAP
+/* 对齐 A 的 now_ms：CLOCK_MONOTONIC 返回【整数】毫秒（不用 double，
+ * 整数与 3000ms 阈值比较语义完全等价，且避免任何 FP 依赖） */
+static unsigned long long
+v7_now_ms (void)
+{
+  struct timespec ts;
+  if (clock_gettime (CLOCK_MONOTONIC, &ts) != 0)
+    return 0;
+  return (unsigned long long) ts.tv_sec * 1000ULL
+       + (unsigned long long) ts.tv_nsec / 1000000ULL;
+}
+#endif
+
+static int v7_active = 0;
+static int v7_inited = 0;
+static unsigned char *v7_ct = NULL;   /* 内嵌密文（init 时从 /proc/self/exe 读出） */
+static size_t v7_ct_len = 0;
+static size_t v7_off = 0;
+static v7_stream_ctx v7_str;          /* HMAC-SHA256 密钥流上下文（取代 RC4 状态） */
+
+/* ---- 运行时对抗（自 elfrun 移植；全部自监控，不依赖父子进程） ----
+ * 心跳线程每 2s 主动查冻结 + TracerPid（全程覆盖，不限于脚本读取窗口）。
+ * fork 只复制调用线程：bash fork 子进程执行命令时心跳不随之复制，
+ * 子进程仅靠 v7_read 内的同步检查兜底——语义正确且无干扰。 */
+static long long v7_last_mono = -1;   /* 冻结检测：上次活动单调时间戳（ms） */
+static int v7_tp_count = 0;           /* TracerPid 抽查计数 */
+static int v7_heartbeat_on = 0;       /* 心跳线程已启动标记（只启动一次） */
+
+static void v7_freeze_check (void);
+static void v7_tracerpid_check (void);
+
+static void
+v7_heartbeat (void *arg)
+{
+  struct timespec ts;
+  (void) arg;
+  for (;;)
+    {
+      /* 2s 睡眠（nanosleep 可被信号打断，重试到满 2s） */
+      { int left = 2; while (left > 0)
+          { ts.tv_sec = left; ts.tv_nsec = 0;
+            if (nanosleep (&ts, &ts) == 0) break;
+            left = (int) ts.tv_sec; } }
+      v7_freeze_check ();
+      v7_tracerpid_check ();
+    }
+}
+
+static void
+v7_start_heartbeat (void)
+{
+  pthread_t th;
+  int rc_;
+  if (v7_heartbeat_on) return;
+  v7_heartbeat_on = 1;
+  rc_ = pthread_create (&th, NULL, (void *(*) (void *)) v7_heartbeat, NULL);
+  if (rc_ != 0)
+    v7_heartbeat_on = 0;
+  else
+    pthread_detach (th);
+}
+
+static void
+v7_die113 (const char *msg)
+{
+  V7_LOG ("V7DIAG: 反调试拦截 —— %s\n", msg);
+  fprintf (stderr, "v7: %s\n", msg);
+  exit (113);   /* 与 elfrun 双进程形态同一对抗退出码语义 */
+}
+
+/* 反调试：/proc/self/status 的 TracerPid 非 0 = 被 ptrace 挂靠 */
+static void
+v7_tracerpid_check (void)
+{
+  char buf[1024];
+  int fd = open ("/proc/self/status", O_RDONLY);
+  ssize_t n;
+  if (fd < 0) return;                     /* 读不了不定罪（无证据） */
+  n = read (fd, buf, sizeof buf - 1);
+  close (fd);
+  if (n <= 0) return;
+  buf[n] = 0;
+  {
+    const char *p = buf;
+    while ((p = strstr (p, "TracerPid")) != NULL)
+      {
+        p += 9;
+        while (*p == ':' || *p == ' ' || *p == '\t') p++;
+        if (*p >= '0' && *p <= '9' && *p != '0')
+          v7_die113 ("TracerPid 非 0（被 ptrace 挂靠）");
+        break;
+      }
+  }
+}
+
+/* 反 frida：/proc/self/maps 特征扫描（frida/linjector/gum-js-loop/gadget） */
+static void
+v7_anti_frida (void)
+{
+  static const char *sigs[] = { "frida", "linjector", "gum-js-loop",
+                                "gadget", 0 };
+  char buf[8192];
+  int fd = open ("/proc/self/maps", O_RDONLY);
+  int i;
+  ssize_t r;
+  size_t tail = 0;
+  if (fd < 0) return;                     /* 读不了 maps 不定罪（无证据） */
+  while ((r = read (fd, buf + tail, sizeof buf - 1 - tail)) > 0)
+    {
+      size_t len = tail + (size_t) r;
+      buf[len] = 0;
+      for (i = 0; sigs[i]; i++)
+        if (strstr (buf, sigs[i]))
+          { close (fd); v7_die113 ("检测到 frida 注入痕迹（maps 特征命中）"); }
+      /* 保留尾部 32 字节：特征串可能跨块边界 */
+      tail = len > 32 ? 32 : len;
+      memmove (buf, buf + len - tail, tail);
+    }
+  close (fd);
+}
+
+/* 冻结近似检测：CLOCK_MONOTONIC 异常停顿（SIGSTOP 冻结期间进程不走代码，
+ * 醒来后首次 zread 的差值 = 停顿时长；> 30s 判为可疑）。
+ * 注意：用户 Ctrl-Z 后长时间不 fg 同样触发——与 elfrun WUNTRACED 语义一致
+ * （见 SIGSTOP 即杀），生产环境交互调试本就被禁止。 */
+static void
+v7_freeze_check (void)
+{
+  struct timespec ts;
+  long long now, diff;
+  if (clock_gettime (CLOCK_MONOTONIC, &ts) != 0) return;
+  now = (long long) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+  if (v7_last_mono < 0) { v7_last_mono = now; return; }
+  diff = now - v7_last_mono;
+  v7_last_mono = now;
+  if (diff > (long long) V7_FREEZE_LIMIT_S * 1000)
+    v7_die113 ("检测到执行异常停顿（疑似 SIGSTOP 冻结 dump）");
+}
+
+/* ---- r15：C 层环境检测（对齐 A 线 elfrun.c:581「解密前拦截」语义）----
+ * 与 V6 内层检测互补而非替代：
+ *   V6 内层（DETS/_am）—— 骨架执行时才查，此时 V7 已解密完毕；
+ *   本组 —— 在 KDF 之前查，命中即不解密，明文不出世。
+ * 全部走 v7_die113（exit 113），与既有 frida/TracerPid/冻结检测同一语义。 */
+
+extern char *which_set_flags (void);   /* bash flags.c：返回真实 $-（含 x/v 等位） */
+
+/* 父进程 cmdline 检测。
+ * 注意：B 线是单进程，父进程通常是启动它的 shell（adb/Termux 下尤其常见），
+ * 无脑匹配会大面积误杀 —— 故先走白名单豁免，并保留 V7_NO_PPID_CHECK=1
+ * 逃生开关（现场排查用，见 README 排障表）。 */
+static void
+v7_ppid_check (void)
+{
+  static const char *dbg[] = { "strace", "ltrace", "gdb", "lldb", "gdbserver",
+                               "frida-server", "ida", "ida64", "radare2",
+                               "r2", "dbserver", 0 };
+  static const char *ok[]  = { "sh", "-sh", "bash", "-bash", "mksh", "ash",
+                               "busybox", "zsh", "adbd", "init",
+                               "system_server", "app_process", 0 };
+  char path[64], buf[4096];
+  const char *base, *s;
+  int fd, i;
+  ssize_t n;
+
+  if (getenv ("V7_NO_PPID_CHECK") != NULL) return;   /* 逃生开关 */
+
+  snprintf (path, sizeof path, "/proc/%ld/cmdline", (long) getppid ());
+  fd = open (path, O_RDONLY);
+  if (fd < 0) return;                    /* 读不了不定罪（无证据） */
+  n = read (fd, buf, sizeof buf - 1);
+  close (fd);
+  if (n <= 0) return;
+  buf[n] = 0;
+
+  /* cmdline 以 NUL 分隔，首段即 argv[0]；取其 basename */
+  base = buf;
+  for (s = buf; *s; s++)
+    if (*s == '/') base = s + 1;
+  if (*base == '\0') return;             /* 内核线程/空 cmdline */
+
+  for (i = 0; ok[i]; i++)                /* 白名单优先：普通 shell 不算威胁 */
+    if (strcmp (base, ok[i]) == 0) return;
+
+  for (i = 0; dbg[i]; i++)
+    if (strcmp (base, dbg[i]) == 0)
+      v7_die113 ("父进程疑似调试器");
+}
+
+/* 环境类检测总入口：LD_PRELOAD / xtrace / PS4 / BASH_XTRACEFD / 父进程 */
+static void
+v7_env_guards (void)
+{
+  const char *p;
+  char *fl;
+
+  /* ① LD_PRELOAD —— 对齐 A 线 elfrun.c:581（命中即不解密） */
+  p = getenv ("LD_PRELOAD");
+  if (p != NULL && *p != '\0')
+    v7_die113 ("检测到 LD_PRELOAD 注入");
+
+  /* ② xtrace / verbose —— 直接读 bash 内部 flags。
+   *    比 V6 查 shell 变量 $- 更不可伪造：环境变量能改，内部 flags 不能。
+   *    注意 verbose（set -v）与 xtrace（set -x）是两个独立开关：
+   *      xtrace 打印展开后的命令；verbose 打印【解密后的原始输入行】，
+   *      对加壳产物泄露更直接 —— r15 实测 SHELLOPTS=verbose 可整篇倾倒
+   *      明文。两个位都必须拦，只查 'x' 是 r15 初版的漏网之鱼。 */
+  fl = which_set_flags ();
+  if (fl != NULL)
+    {
+      int has_dbg = (strchr (fl, 'x') != NULL || strchr (fl, 'v') != NULL);
+      free (fl);
+      if (has_dbg)
+        v7_die113 ("检测到调试回显（xtrace/verbose）开启");
+    }
+
+  /* ③ PS4 篡改 —— 探测「有人想格式化调试回显输出」。行为分两支
+   *    （variables.c initialize_shell_variables）：
+   *      euid==0：bash 原生无条件 bind_variable ("PS4", "+ ", 0) 覆盖，
+   *               env 传什么都白设 —— bash 天然兜底，本检测恒不触发
+   *               （root 战场本就全线失守，可接受）；
+   *      非 root：set_if_not 保留环境值 —— 检测有效。
+   *    目标环境（安卓 shell 域非 root）恰走有效分支。r15 在 root 沙箱
+   *    实测「不触发」即 euid==0 分支所致 —— 非检测无效，勿据此删除。 */
+  p = getenv ("PS4");
+  if (p != NULL && strcmp (p, "+ ") != 0)
+    v7_die113 ("检测到 PS4 被篡改");
+
+  /* ④ BASH_XTRACEFD —— 有人想把调试回显重定向到别处 */
+  p = getenv ("BASH_XTRACEFD");
+  if (p != NULL && *p != '\0')
+    v7_die113 ("检测到 BASH_XTRACEFD 被设置");
+
+  /* ⑤ BASH_ENV —— 非交互 bash 会【先 source 它再读脚本】（shell.c
+   *    run_startup_files → execute_env_file），是攻击者在解密发生前唯一
+   *    可控的启动注入点（可覆盖 eval、挂 DEBUG trap、exec 重定向…）。
+   *    r15 已在 C 层把该 source 整段禁用（见 xtrace_kill.py 对 shell.c
+   *    的 patch）—— 此处保留检测属纵深防御：万一上游 patch 被还原，
+   *    仍能在解密前拦下。正常用户不会设 BASH_ENV，无误杀面。 */
+  p = getenv ("BASH_ENV");
+  if (p != NULL && *p != '\0')
+    v7_die113 ("检测到 BASH_ENV 注入（启动前 source 点）");
+
+  /* ④ 父进程 cmdline（带白名单豁免） */
+  v7_ppid_check ();
+}
+
+/* ---- 密码学核心：lib/sh/v7core.c（r12 起 include crypto_core.h，与 A 同源） ----
+ * VMP 目标（--vmp 时）：v7_scrypt_kdf / v7_keys / v7_keystream / v7_tag / v7_wb_decode
+ * 本文件仅保留：blob 定位/模式分支/对抗监控/流式供给（无秘密的骨架逻辑）。 */
+extern int  v7c_scrypt_kdf (const unsigned char *pass, unsigned int plen,
+                            const unsigned char *salt, unsigned int slen,
+                            unsigned char *out, unsigned int outlen,
+                            unsigned int N);
+extern void v7c_keys (const unsigned char seed[32],
+                      unsigned char kenc[32], unsigned char kmac[32]);
+extern void v7c_stream_init (v7_stream_ctx *ctx, const unsigned char kenc[32]);
+extern void v7c_stream_xor (v7_stream_ctx *ctx,
+                            const unsigned char *in, unsigned char *out,
+                            unsigned int n);
+extern void v7c_stream_wipe (v7_stream_ctx *ctx);
+extern void v7c_tag (const unsigned char kmac[32],
+                     const unsigned char *ct, unsigned int n,
+                     unsigned char out[16]);
+extern int  v7c_ct_eq (const unsigned char *a, const unsigned char *b,
+                       unsigned int n);
+extern void v7c_wb_decode (const unsigned char *wb_table,
+                           const unsigned char *wb_perm,
+                           const unsigned char *wb_mask,
+                           unsigned char out[32]);
+
+/* 读 4 字节小端 */
+static size_t
+v7_le32 (const unsigned char *p)
+{
+  return (size_t) p[0] | ((size_t) p[1] << 8)
+       | ((size_t) p[2] << 16) | ((size_t) p[3] << 24);
+}
+
+static void
+v7_init (void)
+{
+  const char *pass;
+  unsigned char seed[32], kenc[32], kmac[32], tag_calc[16], lenbuf[4];
+  const unsigned char *p_tag, *p_salt, *p_N, *p_wbt, *p_wbp, *p_wbm, *p_flags;
+  int fd;
+  struct stat st;
+  off_t total, blob_start;
+  size_t taillen, ctlen, got, N;
+  unsigned int flags;
+  ssize_t n;
+  unsigned char *tail;
+#if V7_TIME_TRAP
+  unsigned long long t0;
+#endif
+
+  v7_inited = 1;                 /* 先置位，避免递归 */
+
+  /* 仅 V7_SELF 存在时激活；否则完全走上游逻辑 */
+  if (getenv ("V7_SELF") == NULL)
+    {
+      /* 最常见"产品没反应"元凶：忘了 V7_SELF=1，bash 退化成普通解释器
+       * （会把喂进来的 passkey 当命令执行 → line 1: xxx: command not found）*/
+      V7_LOG ("V7DIAG: 未检测到 V7_SELF —— 透明解密未激活，本次按普通 bash 运行\n");
+      return;
+    }
+  V7_LOG ("V7DIAG: 透明解密激活（V7_SELF 已设置）\n");
+
+  /* r15：环境检测前置到 KDF 之前 —— 命中即不解密（对齐 A 线 elfrun.c:581）。
+   * 放在 t0 之前：检测自身的 /proc 读取耗时不计入启动时间窗，避免误判调试停顿。 */
+  v7_env_guards ();
+  V7_LOG ("V7DIAG: 环境检测通过（LD_PRELOAD / xtrace / PS4 / XTRACEFD / 父进程）\n");
+
+  /* r16：四层随机化表 —— isa_hook.c 采用【懒装载】（首次翻译时读
+   * V7_ISA_TABLE），不在此显式初始化：ISA hook 是解释器级能力，须与
+   * V7_SELF/blob 流程解耦（r16 初版挂这里 → 裸 bash 永不装载，已修）。
+   * 正式形态：blob 配方头直接传表内存指针（后续迭代）。 */
+
+#if V7_TIME_TRAP
+  /* 反调试④起点：blob 读取 + KDF + 解密全程计入（对齐 A：t0 在 KDF 之前） */
+  t0 = v7_now_ms ();
+#endif
+
+  fd = open ("/proc/self/exe", O_RDONLY);
+  if (fd < 0) { fprintf (stderr, "v7: 无法打开 /proc/self/exe\n"); exit (114); }
+  if (fstat (fd, &st) != 0 || st.st_size < (off_t) (V7_BLOB_OVERHEAD + 4))
+    { close (fd); fprintf (stderr, "v7: 产物未内嵌脚本（尺寸异常）\n"); exit (114); }
+  total = st.st_size;
+  if (pread (fd, lenbuf, 4, total - 4) != 4)
+    { close (fd); fprintf (stderr, "v7: 读取尾部长度失败\n"); exit (114); }
+  taillen = v7_le32 (lenbuf);
+  if (taillen < (size_t) V7_BLOB_OVERHEAD + 1 || (off_t) taillen + 4 > total)
+    { close (fd); fprintf (stderr, "v7: 产物未内嵌脚本（尾部布局无效）\n"); exit (114); }
+  ctlen = taillen - (size_t) V7_BLOB_OVERHEAD;
+  blob_start = total - (off_t) taillen;
+  V7_LOG ("V7DIAG: 定位尾部 blob —— 产物 %lld 字节，尾部 %zu 字节（密文 %zu）\n",
+          (long long) total, taillen, ctlen);
+  tail = (unsigned char *) malloc (taillen);
+  if (tail == NULL) { close (fd); fprintf (stderr, "v7: 内存不足\n"); exit (114); }
+  got = 0;
+  while (got < taillen)
+    {
+      n = pread (fd, tail + got, taillen - got, blob_start + (off_t) got);
+      if (n <= 0) break;
+      got += (size_t) n;
+    }
+  close (fd);
+  if (got != taillen) { free (tail); fprintf (stderr, "v7: 读取内嵌密文失败\n"); exit (114); }
+
+  v7_ct = tail;                          /* tail[0 .. ctlen) 即密文 */
+  v7_ct_len = ctlen;
+  v7_off = 0;
+
+  /* blob v3 字段定位（相对 blob_start） */
+  p_tag   = tail + ctlen;                /* 16B  */
+  p_salt  = tail + ctlen + 16;           /* 16B  */
+  p_N     = tail + ctlen + 32;           /* 4B   */
+  p_wbt   = tail + ctlen + 36;           /* 256B */
+  p_wbp   = tail + ctlen + 292;          /* 256B */
+  p_wbm   = tail + ctlen + 548;          /* 256B */
+  p_flags = tail + ctlen + 804;          /* 4B   */
+  N = v7_le32 (p_N);
+  flags = (unsigned int) v7_le32 (p_flags);
+  V7_LOG ("V7DIAG: 分发模式 = %s（scrypt N=%u）\n",
+          (flags & V7_FLAG_PASSMODE) ? "口令模式" : "离线分发模式", N);
+
+  /* seed 派生：口令模式（scrypt）/ 离线分发模式（白盒三表） */
+  if (flags & V7_FLAG_PASSMODE)
+    {
+      pass = getenv ("V7_PASS");
+      if (pass == NULL || *pass == '\0')
+        { fprintf (stderr, "v7: 缺少 V7_PASS（产物需要外层口令）\n"); exit (114); }
+      V7_LOG ("V7DIAG: 开始 scrypt-like KDF（N=%u，内存约 %uMB）——慢是正常的\n",
+              N, (unsigned) ((N * 128ULL) / (1024 * 1024)));
+      if (v7c_scrypt_kdf ((const unsigned char *) pass,
+                          (unsigned int) strlen (pass),
+                          p_salt, 16, seed, 32,
+                          (unsigned int) N) != 0)
+        { fprintf (stderr, "v7: KDF 失败（内存不足？）\n"); exit (114); }
+      V7_LOG ("V7DIAG: 口令 KDF 完成\n");
+    }
+  else
+    {
+      /* 离线分发：白盒三表解码 seed（无需口令） */
+      v7c_wb_decode (p_wbt, p_wbp, p_wbm, seed);
+      V7_LOG ("V7DIAG: 白盒三表解码完成（离线模式，无需口令）\n");
+    }
+
+  v7c_keys (seed, kenc, kmac);
+  v7c_tag (kmac, tail, (unsigned int) ctlen, tag_calc);
+  if (v7c_ct_eq (tag_calc, p_tag, 16) != 1)
+    {
+      memset (seed, 0, 32); memset (kenc, 0, 32); memset (kmac, 0, 32);
+      V7_LOG ("V7DIAG: HMAC 认证失败 —— 口令错误 或 产物被篡改（二者不可区分）\n");
+      fprintf (stderr, "v7: 认证失败（口令错误或产物被篡改）\n");
+      exit (114);
+    }
+  V7_LOG ("V7DIAG: 骨架验签通过（密文 %zu 字节）\n", ctlen);
+  v7c_stream_init (&v7_str, kenc);
+#if V7_TIME_TRAP
+  /* 反调试④终点：启动→解密完成时间窗（对齐 A elfrun：el > 3000ms → die(113)） */
+  {
+    unsigned long long el = v7_now_ms () - t0;
+
+    if (el > V7_TIME_TRAP_MS)
+      {
+        V7_LOG ("V7DIAG: 启动→解密耗时 %llums 超阈值 %llums —— 判为调试停顿\n",
+                el, V7_TIME_TRAP_MS);
+        V7_LOG ("V7DIAG: 提示：qemu 模拟/低端机上慢属正常，请用 --vmp 构建"
+                "（时间窗自动关闭）或降低 V7_UNWRAP_ITER / V7_SCRYPT_N\n");
+        v7_die113 ("启动→解密耗时超 3000ms（疑似断点/单步调试）");
+      }
+    V7_LOG ("V7DIAG: 反调试④启动时间窗通过（耗时 %llums / 阈值 %llums）\n",
+            el, V7_TIME_TRAP_MS);
+  }
+#endif
+  memset (seed, 0, 32); memset (kenc, 0, 32); memset (kmac, 0, 32);
+  v7_active = 1;
+
+  /* 运行时对抗：激活即查一轮 + 启动心跳线程（全程持续监控） */
+  v7_anti_frida ();
+  v7_tracerpid_check ();
+  v7_freeze_check ();
+  v7_start_heartbeat ();
+  V7_LOG ("V7DIAG: 反调试检查通过（frida 痕迹 / TracerPid / 冻结哨兵）\n");
+  V7_LOG ("V7DIAG: 解密完成 —— 骨架就绪，移交 bash 解释执行\n");
+
+  /* 通知 V6 骨架：脚本来自内存注入，$0 不可信 ——
+   * H_skel / d0 完整性跳过 sed 重读分支，走构建期预计算的内嵌值 */
+  setenv ("V7_EMBED", "1", 1);
+}
+
+/* input.c：判断 fd 是否是 bash 当前脚本输入（脚本读取专用，`read` 内建不走它） */
+extern int fd_is_bash_input (int);
+
+/* 从内嵌密文按序产明文（HMAC-SHA256 密钥流，XOR 对称） */
+static ssize_t
+v7_read (int fd, char *buf, size_t len)
+{
+  size_t avail = v7_ct_len - v7_off;
+  size_t n = (len < avail) ? len : avail;
+  (void) fd;
+  /* 对抗抽查：冻结检测每次都查（vDSO 时钟，纳秒级）；
+   * TracerPid 每 V7_TP_SAMPLE 次抽查一次（open/read status 约 50µs） */
+  v7_freeze_check ();
+  if (++v7_tp_count >= V7_TP_SAMPLE)
+    { v7_tp_count = 0; v7_tracerpid_check (); }
+  if (n == 0) return 0;          /* EOF */
+  v7c_stream_xor (&v7_str,
+                  (const unsigned char *) (v7_ct + v7_off),
+                  (unsigned char *) buf, (unsigned int) n);
+  v7_off += n;
+  return (ssize_t) n;
+}
+
+#ifndef SEEK_CUR
+#  define SEEK_CUR 1
+#endif
+
+#ifndef ZBUFSIZ
+#  define ZBUFSIZ 4096
+#endif
+
+extern int executing_builtin;
+
+extern void check_signals_and_traps (void);
+extern void check_signals (void);
+extern int signal_is_trapped (int);
+extern int read_builtin_timeout (int);
+
+/* Read LEN bytes from FD into BUF.  Retry the read on EINTR.  Any other
+   error causes the loop to break. */
+ssize_t
+zread (fd, buf, len)
+     int fd;
+     char *buf;
+     size_t len;
+{
+  ssize_t r;
+
+  if (!v7_inited)
+    v7_init ();
+  /* 只接管「脚本输入 fd」——`read` 内建 / 管道 / stdin 等其他 fd 原样 read()，
+   * 否则骨架里的 read -s（读 passkey）会把脚本后续字节当口令吞掉。 */
+  if (v7_active && fd_is_bash_input (fd))
+    return v7_read (fd, buf, len);
+
+  check_signals ();	/* check for signals before a blocking read */
+  /* should generalize into a mechanism where different parts of the shell can
+     `register' timeouts and have them checked here. */
+  while (((r = read_builtin_timeout (fd)) < 0 || (r = read (fd, buf, len)) < 0) &&
+	     errno == EINTR)
+    {
+      int t;
+      t = errno;
+      /* XXX - bash-5.0 */
+      /* We check executing_builtin and run traps here for backwards compatibility */
+      if (executing_builtin)
+	check_signals_and_traps ();	/* XXX - should it be check_signals()? */
+      else
+	check_signals ();
+      errno = t;
+    }
+
+  return r;
+}
+
+/* Read LEN bytes from FD into BUF.  Retry the read on EINTR, up to three
+   interrupts.  Any other error causes the loop to break. */
+
+#ifdef NUM_INTR
+#  undef NUM_INTR
+#endif
+#define NUM_INTR 3
+
+ssize_t
+zreadretry (fd, buf, len)
+     int fd;
+     char *buf;
+     size_t len;
+{
+  ssize_t r;
+  int nintr;
+
+  for (nintr = 0; ; )
+    {
+      r = read (fd, buf, len);
+      if (r >= 0)
+	return r;
+      if (r == -1 && errno == EINTR)
+	{
+	  if (++nintr >= NUM_INTR)
+	    return -1;
+	  continue;
+	}
+      return r;
+    }
+}
+
+/* Call read(2) and allow it to be interrupted.  Just a stub for now. */
+ssize_t
+zreadintr (fd, buf, len)
+     int fd;
+     char *buf;
+     size_t len;
+{
+  if (!v7_inited)
+    v7_init ();
+  if (v7_active && fd_is_bash_input (fd))
+    return v7_read (fd, buf, len);
+
+  check_signals ();
+  return (read (fd, buf, len));
+}
+
+/* Read one character from FD and return it in CP.  Return values are as
+   in read(2).  This does some local buffering to avoid many one-character
+   calls to read(2), like those the `read' builtin performs. */
+
+static char lbuf[ZBUFSIZ];
+static size_t lind, lused;
+
+ssize_t
+zreadc (fd, cp)
+     int fd;
+     char *cp;
+{
+  ssize_t nr;
+
+  if (lind == lused || lused == 0)
+    {
+      nr = zread (fd, lbuf, sizeof (lbuf));
+      lind = 0;
+      if (nr <= 0)
+	{
+	  lused = 0;
+	  return nr;
+	}
+      lused = nr;
+    }
+  if (cp)
+    *cp = lbuf[lind++];
+  return 1;
+}
+
+/* Don't mix calls to zreadc and zreadcintr in the same function, since they
+   use the same local buffer. */
+ssize_t
+zreadcintr (fd, cp)
+     int fd;
+     char *cp;
+{
+  ssize_t nr;
+
+  if (lind == lused || lused == 0)
+    {
+      nr = zreadintr (fd, lbuf, sizeof (lbuf));
+      lind = 0;
+      if (nr <= 0)
+	{
+	  lused = 0;
+	  return nr;
+	}
+      lused = nr;
+    }
+  if (cp)
+    *cp = lbuf[lind++];
+  return 1;
+}
+
+/* Like zreadc, but read a specified number of characters at a time.  Used
+   for `read -N'. */
+ssize_t
+zreadn (fd, cp, len)
+     int fd;
+     char *cp;
+     size_t len;
+{
+  ssize_t nr;
+
+  if (lind == lused || lused == 0)
+    {
+      if (len > sizeof (lbuf))
+	len = sizeof (lbuf);
+      nr = zread (fd, lbuf, len);
+      lind = 0;
+      if (nr <= 0)
+	{
+	  lused = 0;
+	  return nr;
+	}
+      lused = nr;
+    }
+  if (cp)
+    *cp = lbuf[lind++];
+  return 1;
+}
+
+void
+zreset ()
+{
+  lind = lused = 0;
+}
+
+/* Sync the seek pointer for FD so that the kernel's idea of the last char
+   read is the last char returned by zreadc. */
+void
+zsyncfd (fd)
+     int fd;
+{
+  off_t off, r;
+
+  off = lused - lind;
+  r = 0;
+  if (off > 0)
+    r = lseek (fd, -off, SEEK_CUR);
+
+  if (r != -1)
+    lused = lind = 0;
+}

@@ -308,8 +308,34 @@ ustc → gnu），最后调 `build_poc.sh`。
   会得到 `v7: 外层口令错误或产物被篡改（HMAC 校验失败）` / rc=114 —— 而实际上
   口令是对的，只是 KDF 不是同一个。
 
-### 7.5 别用 `ls` 判定"文件缺失"
+### 7.5 别用 `ls` 判定"文件缺失"（**已修复，但教训值得记住**）
+
 `zread.c.v7poc` 曾被我 `ls` 判为不存在，实际全盘有 **6 份副本**。用 `find / -name`。
+
+> **2026-09-15 追查结论**：这个文件**根本没进版本库** ——
+> `git ls-files` 只有 `zread.c.patch`，`git log --all -- '*zread.c.v7poc'` 零记录，
+> 且它**不在 `.gitignore` 里**（`git check-ignore` 无命中），属**纯遗漏**。
+> 后果：`build_poc.sh` §4.1 第一步 `cp $HERE/zread.c.v7poc $SRC/lib/sh/zread.c`
+> 在任何干净 clone 上**必然失败** ⇒ **bash 线的源码现场构建路径是断的**。
+>
+> 这解释了为什么"我本地明明能构建"—— 工作副本里有那个未跟踪文件。
+> **未跟踪文件在本地存在 ≠ 别人拿得到。**
+>
+> **修复**：从构建树取证并入库。判据不是"某副本长得对"，而是
+> `diff v7/bash_poc/zread.c.v7poc /tmp/v7test/bx/lib/sh/zread.c` **逐字节一致** ——
+> 后者是 `build_poc.sh` 真实构建过 `bash` 二进制的那棵树（`/tmp/v7test`，
+> 见其 `work/0-meta/params.txt` 记录 `src=/tmp/v7test/bx`）。
+> 入库版本：795 行，`sha256 = cf6fc6dc1a471543c2fd95bab4f1fc47d5bb6eba909be736e3631560101328e1`。
+
+**推广的检查方法**：交付前用**跟踪清单**对账，不要靠 `ls` 或个人记忆：
+
+```sh
+# 每个 build 脚本引用的文件都必须被 git 跟踪
+git ls-files v7/bash_poc/ | sort > /tmp/tracked.txt
+# 与 build_poc.sh 实际 cp/调用 的文件清单比对（见该脚本 L191-229）
+```
+
+同样的方式可查出其余"本地有、仓库无"的散落依赖。
 
 ### 7.6 交叉架构在 x86 沙箱里跑不动
 没有 `binfmt_misc` 的 aarch64 注册，`#!/bin/sh` wrapper 去 exec aarch64 ELF 会
