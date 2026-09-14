@@ -23,13 +23,21 @@
 #        [--keep-stage]                  # 保留中间产物（含明文语义等价物，勿分发）
 #
 # 运行（★ 运行契约：**必须带一个 argv 文件参数**，惯例 /dev/null）：
-#   口令模式： echo '内层passkey' | V7_SELF=1 V7_PASS='外层口令' V7_ISA_TABLE=<out>.isa.bin ./out.mksh /dev/null
-#   离线模式： echo '内层passkey' | V7_SELF=1                     V7_ISA_TABLE=<out>.isa.bin ./out.mksh /dev/null
+#   口令模式： V7_SELF=1 V7_PASS='外层口令' V7_ISA_TABLE=<out>.isa.bin ./out.mksh /dev/null
+#   离线模式： V7_SELF=1                     V7_ISA_TABLE=<out>.isa.bin ./out.mksh /dev/null
 #
 #   ⚠ 不带参数时 mksh 进入 **stdin 模式（FSTDIN）**，main.c 的 shf_open 分支
 #     根本不会被走到 —— 表现为**静默 rc=0、零输出**。这是运行契约，不是缺陷。
 #   ⚠ 产物是**可执行 ELF**，直接 `./out.mksh` 执行；**不要**写成 `mksh out.mksh`
 #     （那样 /proc/self/exe 会指向解释器而非产物，解密必然不触发）。
+#
+# ── 已知限制（2026-09 复验发现，尚未修复）─────────────────────────────────
+#   ⚠ **内层口令档（--pass）当前不可用**：V6 骨架用 `IFS= read -rs -p 'Key: '`
+#     读口令，而 `-p` 在两个 shell 里语义相反 —— bash 是 "prompt 字符串"，
+#     mksh 是 "从 coprocess 读" ⇒ 产物报 `read: -p: no coprocess`，rc=1。
+#     **外层口令（--outer-pass）与离线分发模式不受影响，正常可用。**
+#     修法候选：V6 生成器侧对目标解释器消歧（改写为 printf + 无 -p 的 read）。
+#     详见 docs/BUILD_MKSH.md §6.3 / §6.3b 与 docs/PITFALLS.md §8.4b。
 #
 # ── 与 bash 线的关键顺序差异（照抄 bash 线必死） ────────────────────────────
 #   bash 线：先改写脚本（ISA）→ 再构建解释器。因为改版 bash 由调用者提供，
@@ -497,18 +505,22 @@ echo
 echo "★ 运行契约：**必须带一个 argv 文件参数**（惯例 /dev/null）。"
 echo "  不带参数时 mksh 进 stdin 模式，解密分支不会被走到 —— 表现为静默 rc=0、零输出。"
 echo "  产物是 ELF，直接执行；**不要**写成 'mksh $OUT'（那是错误用法）。"
+if [ -n "$INNER_PASS" ]; then
+  # 2026-09 复验：内层口令档撞上 read -p 语义分叉（见 .md §6.3 / PITFALLS §8.4b）。
+  # 这里不静默给出一条跑不通的示例 —— 那等于把已知缺陷藏起来。
+  echo
+  echo "⚠  警告：本次构建用了【内层口令档】（V7_PASS / --pass）。"
+  echo "    该档在 mksh 线【当前不可用】：V6 骨架用 'IFS= read -rs -p ...' 读口令，"
+  echo "    而 '-p' 在 bash 里是 prompt、在 mksh 里是【从 coprocess 读】"
+  echo "    ⇒ 运行时报 'read: -p: no coprocess'，rc=1。"
+  echo "    请改用【外层口令】重建（去掉 V7_PASS，保留 V7_OUTER_PASS），"
+  echo "    或去掉 V7_OUTER_PASS 走离线分发模式。"
+  echo "    参考：docs/BUILD_MKSH.md §6.3 / §6.3b，docs/PITFALLS.md §8.4b"
+fi
 if [ -n "$OUTER_PASS" ]; then
-  if [ -n "$INNER_PASS" ]; then
-    echo "  echo '$INNER_PASS' | V7_SELF=1 V7_PASS='$OUTER_PASS' $OUT /dev/null"
-  else
-    echo "  V7_SELF=1 V7_PASS='$OUTER_PASS' $OUT /dev/null"
-  fi
+  echo "  V7_SELF=1 V7_PASS='$OUTER_PASS' $OUT /dev/null"
 else
-  if [ -n "$INNER_PASS" ]; then
-    echo "  echo '$INNER_PASS' | V7_SELF=1 $OUT /dev/null"
-  else
-    echo "  V7_SELF=1 $OUT /dev/null"
-  fi
+  echo "  V7_SELF=1 $OUT /dev/null"
 fi
 if [ -n "$_isa_bin" ]; then
   echo "  注：本产物带 ISA 表，运行时需 export V7_ISA_TABLE=$_isa_bin"

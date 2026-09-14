@@ -139,7 +139,7 @@ bash tools/v6_pm_diag.sh    # 逐条列出 6 项会触发密钥污染的条件
 |---|---|---|---|---|---|
 | **纯脚本线**（最快上手） | `v6/shell_script_obfuscator_v6.sh` | 混淆后的 `.sh` | ❌ | 宿主有 bash **或** mksh 即可 | ✅ 稳定 |
 | **bash 线**（最强） | `v7/v7_build.sh` | 改过的 bash 二进制 | ✅ L1-L6 | 自带解释器，不依赖宿主 | ✅ 生产可用 |
-| **mksh 线** | `v7/v7_build.sh`（`V7_MODE=mksh`） | 改过的 mksh 二进制 | ✅ L1-L6 | 自带解释器，不依赖宿主 | ✅ **已可打包**（C1/C2/C3 已通） |
+| **mksh 线** | `v7/v7_build.sh`（`V7_MODE=mksh`） | 改过的 mksh 二进制 | ✅ L1-L6 | 自带解释器，不依赖宿主 | ⚠️ **已可打包**（C1/C2/C3 已通）；内层口令档待修 |
 
 ### 怎么选
 
@@ -153,21 +153,24 @@ bash tools/v6_pm_diag.sh    # 逐条列出 6 项会触发密钥污染的条件
 **mksh 线一条命令**（不需要预先构建 mksh，会从源码现场构建改版解释器）：
 
 ```bash
-V7_MODE=mksh V7_MKSH_SRC=./mksh-src V7_OUTER_PASS='外层口令' V7_PASS='内层key' \
+V7_MODE=mksh V7_MKSH_SRC=./mksh-src V7_OUTER_PASS='外层口令' \
   bash v7/v7_build.sh your_script.sh app.mksh
 
 # 运行 —— ★ 必须带一个 argv 文件参数（惯例 /dev/null），见下方提示
-echo '内层key' | V7_SELF=1 V7_PASS='外层口令' V7_ISA_TABLE=app.mksh.isa.bin \
-  ./app.mksh /dev/null
+V7_SELF=1 V7_PASS='外层口令' V7_ISA_TABLE=app.mksh.isa.bin ./app.mksh /dev/null
 ```
 
-> **★ 运行契约**：产物必须带一个 argv 文件参数。**不带时 mksh 进 stdin 模式
-> （FSTDIN），解密分支根本不会被走到 → 静默 rc=0、零输出** —— 这是契约，不是缺陷。
-> 同理，产物是 ELF，要 `./app.mksh` **直接执行**，**不要**写成 `mksh app.mksh`
-> （那样 `/proc/self/exe` 指向解释器而非产物）。详见
-> [`docs/BUILD_MKSH.md`](docs/BUILD_MKSH.md) §六.3。
+> **★ 运行契约**：产物必须带一个 argv 文件参数。不带时 mksh 进 stdin 模式
+> （FSTDIN），解密分支根本不会被走到 —— 无内层口令档表现为**静默 rc=0、零输出**，
+> 这是契约不是缺陷。同理，产物是 ELF，要 `./app.mksh` **直接执行**，
+> **不要**写成 `mksh app.mksh`（那样 `/proc/self/exe` 指向解释器而非产物）。
+> 详见 [`docs/BUILD_MKSH.md`](docs/BUILD_MKSH.md) §六.3。
 >
-> **尚未做的**：跨架构（aarch64）实测、`V7_WRAP` 自释放包装接入（属 C4）。
+> **⚠️ 暂不要传 `V7_PASS`（内层口令）**：那会走到 V6 骨架的 `read -rs -p 'Key: '`，
+> 而 `-p` 在 mksh 里是"从 coprocess 读" ⇒ 产物 rc=1 失败。
+> **外层口令 `V7_OUTER_PASS` / 离线分发模式不受影响**，正常可用。
+>
+> **尚未做的**：内层口令档修复、跨架构（aarch64）实测、`V7_WRAP` 接入（属 C4）。
 
 ### 自己构建各 shell 的 C 层补丁
 

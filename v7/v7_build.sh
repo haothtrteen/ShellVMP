@@ -44,6 +44,10 @@
 #   V7_MKSH_BIN     复用已构建的改版 mksh（跳过构建，秒级重打包）
 #   V7_ARCH/V7_CC   目标架构（交叉编译 aarch64 等）
 #   （其余同 bash 线：V7_OUTER_PASS/V7_SCRYPT_N/V7_ISA/V7_ISA_SEED …）
+#   ⚠ 已知限制：mksh 线的【内层口令档】（V7_PASS）当前不可用 ——
+#      V6 骨架的 `read -rs -p` 在 mksh 里 -p 是"从 coprocess 读" ⇒ rc=1。
+#      【外层口令 V7_OUTER_PASS 与离线分发模式不受影响】。详见
+#      docs/BUILD_MKSH.md §6.3 / docs/PITFALLS.md §8.4b
 # ---------------------------------------------------------------- bash 线专有
 #   V7_OUTER_PASS  外层口令（不给 = 离线分发模式，白盒 seed）
 #   V7_SCRYPT_N    外层 scrypt 内存参数（默认 131072）
