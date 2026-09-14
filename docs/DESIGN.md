@@ -61,6 +61,48 @@
 **"新形态不在文中"守卫**（防前缀包含导致的降级，真实事故：
 `EC_DECL_EXTRA_V1` 是 `EC_DECL_EXTRA` 的前缀）。
 
+## 4.5 查表函数/调用点发现（discover_callers.py，规则 2 / G2）
+
+G1 找到"表"；插桩真正要落的位置是**查表函数和调用点**。从表名出发画
+引用图谱，引用点分四类：
+
+| role | 含义 | 实例 |
+|---|---|---|
+| `decl` | 函数体外（声明/初始化器） | 表定义、`extern` |
+| `macro` | 宏体内（续行链回溯到 `#define`） | bash `CHECK_FOR_RESERVED_WORD` |
+| `func-ref` | 函数体内直接引用（附函数名） | dash `findkwd` |
+| `caller` | 上述函数/宏在全目录的调用点 | 插桩候选 |
+
+两个关键机制：
+
+1. **容器链**：运行时哈希型 shell（mksh）的表只被"喂表"函数引用
+   （`tokentab` 仅出现在 `initkeywords` 的枚举循环里），真实查询在
+   容器上。识别特征：枚举表 + `&容器` 出现在函数调用实参位置
+   （`ktenter(&keywords, ...)`）→ 对容器递归一轮。**查询形态即停**：
+   表名后紧跟 `,` 或 `)`（被整体当实参消费，如 `ktsearch(&keywords, ident, h)`）
+   说明本层已是查询点，不再向下展开（防止 `keywords → aliases → ...` 发散）。
+2. **函数索引**：行首"类型/存储类前缀 + 函数名 + (`"，`)` 后判定
+   ANSI `{` / K&R 声明列表 / 原型 `;` 三种形态——三种风格缺一不可
+   （bash y.tab.c 顶格式、bashline.c K&R、常见单行式都实测出现过）。
+
+实测修正了一个旧认知：bash 的 `find_reserved_word` 不是纯死代码——
+它有 print_cmd.c:1398 一处**旁路调用**（打印函数定义时查名字），
+只是不在解析主路径。G2 把主路径候选（宏展开 `read_token_word` 两处）
+与旁路同时摆上桌面，**死活裁决留给规则 3（探针）**——这正是发现器
+"产出候选不是结论"的边界。
+
+### G2 主流程伪代码
+
+```text
+frontier = [(G1表, depth=2)]
+while frontier 有层:
+    扫引用 → 分类 decl/macro/func-ref
+    对 macro/func-ref 的 owner 找全目录调用点 → caller
+    若本层无"查询形态"引用:
+        提取枚举函数体内实参位置的 &容器（按频次取前 4）
+        容器入 frontier（depth-1）
+```
+
 ### 三条铁律
 
 1. **op 执行引擎只有一份**（`run_ops()`）——CLI 与库共用；两份循环必然漂移。
@@ -78,9 +120,13 @@
 
 - `tests/test_engine.sh`：11 断言全绿（自包含 fixture，覆盖铁律 1/2 的可执行证据）；
 - `tests/test_discover.sh`：9 断言全绿（6 自包含 + 3 壳真实树，缺树 SKIP）；
+- `tests/test_callers.sh`：9 断言全绿（6 自包含：direct 调用链/死代码/宏/容器链
+  + 3 壳真实树，缺树 SKIP）；
 - bash-5.2 生产锚点集：ShellVMP 仓库 `v7/bash_poc/anchors.py`（B0 重构后
   与旧脚本**字节级一致**，4/4 文件 md5 复现）；
-- mksh-R59c L3：锚点表驱动插桩，`sh Build.sh -r` 编译通过，4 项构造等价检查通过。
+- mksh-R59c L3：锚点表驱动插桩，`sh Build.sh -r` 编译通过，4 项构造等价检查通过；
+- G2 引用图谱与手工分析交叉验证一致：mksh 的 `yylex`(lex.c:1046)、
+  dash 的 `findkwd` 两个调用点、bash 的宏展开点均被自动找回。
 
 ## 7. 迁移记录
 

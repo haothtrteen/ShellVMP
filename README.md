@@ -7,11 +7,16 @@
 一句话：**发现器告诉你往哪儿插，引擎负责怎么插。**
 
 ```text
-┌──────────────────────┐      候选位置        ┌──────────────────────┐
-│ discover_tables.py   │ ───────────────────▶ │ 人工确认语义等价       │
-│ 自动扫"保留字表"形态   │                      │ （是否在主执行路径？）  │
-└──────────────────────┘                      └──────────┬───────────┘
-                                                         ▼ 写成锚点表
+┌──────────────────────┐   保留字表（G1）     ┌──────────────────────┐
+│ discover_tables.py   │ ───────────────────▶ │ discover_callers.py  │
+│ 自动扫"保留字表"形态   │   表名                │ 查表函数/宏/容器链/    │
+└──────────────────────┘                      │ 调用点引用图谱（G2）   │
+                                              └──────────┬───────────┘
+                                                         ▼ 人工/探针确认主路径
+                                              ┌──────────────────────┐
+                                              │ 写成锚点表            │
+                                              └──────────┬───────────┘
+                                                         ▼
                                               ┌──────────────────────┐
                                               │ hook_engine.py       │
                                               │ 定位→回滚→幂等→插入    │
@@ -21,14 +26,19 @@
 ## 快速开始
 
 ```bash
-# 0. 跑自带回归（引擎部分自包含，无需真实 shell 源码）
+# 0. 跑自带回归（自包含，无需真实 shell 源码）
 bash tests/test_engine.sh
+bash tests/test_callers.sh
 
 # 1. 构建（必须！见"三条坑"第 3 条）目标 shell 后，扫它的源码树
 make -C /path/to/dash-0.5.12          # 先 ./configure && make
 python3 discover_tables.py /path/to/dash-0.5.12/src
 
-# 2. 拿到候选位置后，写锚点表（格式见 examples/anchors_example.py）
+# 2. 从 G1 发现的表出发，画出引用图谱（查表函数/宏/调用点）
+python3 discover_callers.py /path/to/dash-0.5.12/src --from-g1
+#   或手动指定表：python3 discover_callers.py <目录> --table parsekwd
+
+# 3. 确认主路径后，写锚点表（格式见 examples/anchors_example.py）
 python3 hook_engine.py examples/anchors_example.py --list
 python3 hook_engine.py examples/anchors_example.py --srcdir <源码树> --dry-run
 python3 hook_engine.py examples/anchors_example.py --srcdir <源码树>
@@ -46,6 +56,20 @@ python3 hook_engine.py examples/anchors_example.py --srcdir <源码树>
 | dash-0.5.12 | `findkwd(wordtext)` → `findstring` | `parsekwd[]` | token_vars.h（**构建时**由 mktokens 生成） |
 
 所以发现器只需要找一种形态：**一个数组，成员是保留字字符串**。
+
+### G2 引用图谱（discover_callers.py）实测
+
+从 G1 的表出发自动画出"表 → 查表函数 → 调用点"：
+
+| shell | 自动发现的主路径候选 |
+|---|---|
+| bash | 宏 `CHECK_FOR_RESERVED_WORD` 展开点 `read_token_word` y.tab.c:7556/7573（与 ShellVMP 手工插桩选择一致）；旁路 `find_reserved_word` 仅 print_cmd.c:1398 一处 |
+| mksh | 容器链 `tokentab → keywords` → `ktsearch(&keywords,...)` 调用点 **lex.c:1046（yylex）**/ tree.c:776 / funcs.c:653 |
+| dash | `findkwd`（parser.c:1632）→ 调用点 parser.c:725 + exec.c:788 |
+
+运行时哈希型 shell（mksh）的表只被"喂表"函数引用，真实查询在容器上——
+发现器按"枚举表 + `&容器` 实参"特征自动展开容器链，并凭"表被整体当实参
+消费"（查询形态）及时停住。
 
 ## 三条坑（发现器，改代码前先读）
 
@@ -94,6 +118,7 @@ python3 hook_engine.py examples/anchors_example.py --srcdir <源码树>
 |---|---|---|
 | `tests/test_engine.sh`（11 断言） | 插桩/编译运行/幂等/dry-run/响亮失败/历史回滚/前缀陷阱/--list/库路径同引擎 | 无（自包含 fixture） |
 | `tests/test_discover.sh`（9 断言） | 语法/合成表发现/低命中拒绝/可复现/净化等长/花括号抗干扰 + 三壳真实树 | 可选：BASH_SRC_DIR / MKSH_SRC_DIR / DASH_SRC_DIR（缺则 SKIP） |
+| `tests/test_callers.sh`（9 断言） | direct 调用链/死代码无调用者/宏展开点/容器链/可复现 + 三壳真实树 | 同上 |
 
 ## License
 
