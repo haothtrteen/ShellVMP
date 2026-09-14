@@ -555,12 +555,70 @@ MKSH_MOUNT_BODY = MKSH_MOUNT_ANCHOR.replace(
     "\tif (!as_builtin) {\n",
 )
 
+# =============================================================================
+# mksh R59c —— C2：shf_open() 骨架注入层（路线 C）
+# =============================================================================
+#
+# 目标：mksh 能直接跑"密文骨架"（自释放产物），形式对齐 bash 线的
+#       zread.c.v7poc —— 但**劫持层不同**：bash 劫持读取层（zread），
+#       mksh 劫持**打开层**（shf_open）。理由见 v7_shf_inject_mksh.c 文件头。
+#
+# 为什么选 shf_open：
+#   · mksh 全树只有 5 个 shf_open 调用者，其中仅 2 个是脚本来源
+#     （main.c:532 主脚本 / main.c:758 include）⇒ 一处覆盖全部脚本入口。
+#   · 只改"打开"这一步，**读取语义零改动** ⇒ 顺带绕开 bash 线 elf 形态里
+#     "mksh 把 8192 字节短读当 EOF"的阻塞项（memfd 可 seek、无短读问题）。
+#
+# 注入点：binopen3() 拿到 fd 之后、fd<0 错误分支之前。
+#   取这里的理由：shf 结构体已分配好（shf/bsize/flags 都就位），
+#   替换 fd 只需把 fd 换成注入 fd，后续 shf_reopen(fd, sflags, shf) 原样走 ——
+#   改动面最小，且 shf 生命周期管理（afree/unwind）完全不受影响。
+#
+# fail-closed：v7_shf_inject 返回 -1 时**照常走 binopen3 的原结果**，
+#   裸 mksh 跑普通脚本行为零变化。
+
+MKSH_SHFOPEN_ANCHOR = (
+    "\tfd = binopen3(name, oflags, mode);\n"
+    "\tif (fd < 0) {\n"
+    "\t\teno = errno;\n"
+    "\t\tafree(shf, shf->areap);\n"
+    "\t\terrno = eno;\n"
+    "\t\treturn (NULL);\n"
+    "\t}\n"
+)
+MKSH_SHFOPEN_BODY = (
+    "\tfd = binopen3(name, oflags, mode);\n"
+    "/* V7 C2 骨架注入（mksh 插桩，锚点 shf_open 的 binopen3 之后）。\n"
+    "   受保护产物形态下，v7_shf_inject 返回一个指向【解密后明文】的\n"
+    "   memfd；返回 -1 表示未激活或不是目标 ⇒ 沿用原生 fd，行为不变。\n"
+    "   放在这里而不是替换 binopen3：shf 结构体已分配、错误清理路径\n"
+    "   （afree + return NULL）保持不变，改动面最小。 */\n"
+    "\t{\n"
+    "\t\textern int v7_shf_inject(const char *);\n"
+    "\t\tint v7_ifd = v7_shf_inject(name);\n"
+    "\n"
+    "\t\tif (v7_ifd >= 0) {\n"
+    "\t\t\tif (fd >= 0)\n"
+    "\t\t\t\tclose(fd);\n"
+    "\t\t\tfd = v7_ifd;\n"
+    "\t\t}\n"
+    "\t}\n"
+    "\tif (fd < 0) {\n"
+    "\t\teno = errno;\n"
+    "\t\tafree(shf, shf->areap);\n"
+    "\t\terrno = eno;\n"
+    "\t\treturn (NULL);\n"
+    "\t}\n"
+)
+
+
 MKSH_R59C = {
     "name": "mksh-R59c",
     "files": {
         "kw": "lex.c",
         "com": "exec.c",
         "main": "main.c",
+        "shf": "shf.c",
     },
     "ops": [
         {
@@ -597,6 +655,13 @@ MKSH_R59C = {
             "kind": "replace",
             "site_old": MKSH_MOUNT_ANCHOR,
             "site_new": MKSH_MOUNT_BODY,
+        },
+        {
+            "file": "shf",
+            "tag": "shf.c shf_open 入口 C2 骨架注入层",
+            "kind": "replace",
+            "site_old": MKSH_SHFOPEN_ANCHOR,
+            "site_new": MKSH_SHFOPEN_BODY,
         },
     ],
 }
