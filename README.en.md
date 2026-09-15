@@ -6,6 +6,12 @@
 - **V7** — An ELF wrapper layer: anti-debugging + anti-memory-read + streaming decryption straight into the interpreter. The full plaintext never exists on disk.
 - **V7-ISA** — Interpreter-modification layer (PoC): tokenizes command names / keywords / variable names so the artifact on disk is just a stream of random tokens.
 
+> **Platform**: **not tied to any platform.** Artifacts are ELF binaries or plain scripts —
+> they run **anywhere Linux/ELF runs**: Android, desktop Linux, servers, containers, embedded.
+> **Script sources**: bash is native; dash / POSIX / zsh are **converted to bash** and fed into
+> the bash line; mksh has its own second packaging path. **You do not need to modify every
+> interpreter** — see [`docs/SHELL_TARGETS.md`](docs/SHELL_TARGETS.md) §0 (Chinese).
+
 > The goal is not "hide it deeper" — it's **changing the attack surface**: no plaintext on disk,
 > the runtime plaintext window as short and bounded as possible, and critical logic turned into
 > virtual instructions that can't be statically analyzed.
@@ -86,6 +92,11 @@ bash demo.protected.sh
 `ANDROID_GATE=0` is for testing outside Android; by default the Android environment gate is on
 (non-Android environments are silently refused).
 
+> ⚠️ **The gate is an optional anti-analysis switch, not a platform restriction.** Its purpose
+> is to make artifacts silently refuse to run in environments they *shouldn't* run in (raising
+> sandbox-analysis cost). It does **not** mean the project is Android-only. On desktop /
+> server / containers, just add `ANDROID_GATE=0` — the same practice applies on **every** platform.
+
 ### Common switches
 
 ```bash
@@ -147,15 +158,23 @@ Add `V7_OUTER_PASS='at-least-8-chars'` to require a passphrase
 | Line | Entry point | Artifact | Tokenization | Host dependency | Status |
 |---|---|---|---|---|---|
 | **Pure-script** (fastest) | `v6/shell_script_obfuscator_v6.sh` | obfuscated `.sh` | ❌ | host needs bash **or** mksh | ✅ stable |
-| **bash line** (strongest) | `v7/v7_build.sh` | modified bash binary | ✅ L1–L6 | self-contained | ✅ production-ready |
-| **mksh line** | `v7/v7_build.sh` (`V7_MODE=mksh`) | modified mksh binary | ✅ L1–L6 | self-contained | ⚠️ packaging works (C1/C2/C3 pass); inner-passphrase mode pending |
+| **bash line** (primary) | `v7/v7_build.sh` | modified bash binary | ✅ L1–L6 | self-contained | ✅ production-ready |
+| **mksh line** (second path) | `v7/v7_build.sh` (`V7_MODE=mksh`) | modified mksh binary | ✅ L1–L6 | self-contained | ⚠️ packaging works (C1/C2/C3 pass); inner-passphrase mode pending |
 
 | Your situation | Choose |
 |---|---|
 | Just want to stop casual source leakage | **Pure-script** (zero build, one command) |
-| Want maximum protection, can accept a multi-MB bundled interpreter | **bash line** |
-| Target is a real Android device / want to drop the bundled bash size | **mksh line** — ~30k LoC vs bash's ~1.5M; much smaller artifact |
+| Want maximum protection, can accept a multi-MB bundled interpreter | **bash line** (the **primary** line — handles all script sources) |
+| Want a smaller artifact (mksh ~30k LoC vs bash ~1.5M) / targeting Android devices | **mksh line** (the **second packaging path**) |
 | Not sure | Start with pure-script, then move to bash line |
+
+> **Why only bash and mksh?** The early assumption was "the project is useless unless we
+> modify every interpreter". **That premise doesn't hold.** The correct path is to
+> **convert scripts from any dialect into bash first**, then feed them to the bash line —
+> community translation tools plus our convergence audit
+> ([`docs/DASH_SYNTAX_AUDIT.md`](docs/DASH_SYNTAX_AUDIT.md), Chinese) handle this.
+> Interpreter modification is the **most expensive** link in the chain, so we minimize it:
+> **bash as primary, mksh as the second packaging path, no new lines beyond that.**
 
 ---
 

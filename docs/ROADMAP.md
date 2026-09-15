@@ -189,6 +189,9 @@ Flutter release 产物：
 ### 5.2b 靶子修正：Android 是 mksh，不是 dash（重要）
 
 > 完整调研见 [`SHELL_TARGETS.md`](SHELL_TARGETS.md)。
+>
+> **注意范围**：本节讲的是"**解释器魔改线**在 Android 上该选哪个 shell 验证"，
+> 不是"项目只支持 Android"。项目目标平台是**全平台**，Android 只是验证成本最低的靶场。
 
 **意外发现：Android（首选验证靶场）的系统 shell 是 mksh，不是 dash。**
 
