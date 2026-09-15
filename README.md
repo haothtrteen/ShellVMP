@@ -14,9 +14,11 @@
 
 - [它是怎么工作的](#它是怎么工作的)
 - [三分钟上手](#三分钟上手)
+- [选哪条线？用哪个 shell 打包？](#选哪条线用哪个-shell-打包)
 - [为什么 shell 是最难保护的语言](#为什么-shell-是最难保护的语言)
 - [诚实的安全边界](#诚实的安全边界)
 - [项目结构](#项目结构)
+- [使用指南（构建 / 开关 / 注意事项）](docs/USAGE.md)
 - [版本演进与心路历程](docs/JOURNEY.md)
 - [文档索引](#文档索引)
 - [状态与路线图](#状态与路线图)
@@ -150,32 +152,37 @@ bash tools/v6_pm_diag.sh    # 逐条列出 6 项会触发密钥污染的条件
 | 目标是 Android 真机 / 想省掉内嵌 bash 的体积 | **mksh 线** —— 约 3 万行源码（bash 约 150 万行），产物小得多 |
 | 不确定 | 先用纯脚本线跑通，再上 bash 线 |
 
-**mksh 线一条命令**（不需要预先构建 mksh，会从源码现场构建改版解释器）：
+**最小的开始 —— 不需要任何口令**（连解释器都不用预先准备）：
 
 ```bash
-V7_MODE=mksh V7_MKSH_SRC=./mksh-src V7_OUTER_PASS='外层口令' \
-  bash v7/v7_build.sh your_script.sh app.mksh
+# bash 线
+V7_MODE=bash V7_BASH_BIN=/path/to/改版bash ANDROID_GATE=0 \
+  bash v7/v7_build.sh your_script.sh app.bash
+V7_SELF=1 ./app.bash /dev/null
 
-# 运行 —— ★ 必须带一个 argv 文件参数（惯例 /dev/null），见下方提示
-V7_SELF=1 V7_PASS='外层口令' V7_ISA_TABLE=app.mksh.isa.bin ./app.mksh /dev/null
+# mksh 线（从源码现场构建改版解释器）
+V7_MODE=mksh V7_MKSH_SRC=./mksh-src ANDROID_GATE=0 \
+  bash v7/v7_build.sh your_script.sh app.mksh
+V7_SELF=1 ./app.mksh /dev/null
 ```
 
-> **★ 运行契约**：产物必须带一个 argv 文件参数。不带时 mksh 进 stdin 模式
-> （FSTDIN），解密分支根本不会被走到 —— 无内层口令档表现为**静默 rc=0、零输出**，
-> 这是契约不是缺陷。同理，产物是 ELF，要 `./app.mksh` **直接执行**，
-> **不要**写成 `mksh app.mksh`（那样 `/proc/self/exe` 指向解释器而非产物）。
-> 详见 [`docs/BUILD_MKSH.md`](docs/BUILD_MKSH.md) §六.3。
+**要设口令**就加 `V7_OUTER_PASS='至少8位'`（不给 = **离线分发模式**，运行免口令）。
+
+> **两条最容易踩的坑**（详见 [`docs/USAGE.md`](docs/USAGE.md) §四）：
 >
-> **⚠️ 暂不要传 `V7_PASS`（内层口令）**：那会走到 V6 骨架的 `read -rs -p 'Key: '`，
-> 而 `-p` 在 mksh 里是"从 coprocess 读" ⇒ 产物 rc=1 失败。
-> **外层口令 `V7_OUTER_PASS` / 离线分发模式不受影响**，正常可用。
+> 1. **运行必须带 `V7_SELF=1` + 一个 argv 文件参数**（惯例 `/dev/null`），缺任一个都
+>    **静默零输出** —— 症状与"解密失败"完全同形，极易误诊。
+>    产物是 ELF，要 `./app.bash` **直接执行**，不要写成 `bash app.bash`。
+> 2. **慢机器 + 外层口令默认参数会 `rc=113`**（反调试时间窗被 KDF 耗时误伤）。
+>    桌面调试加 `V7_SCRYPT_N=16384` 即解；或直接走离线分发模式。
 >
-> **尚未做的**：内层口令档修复、跨架构（aarch64）实测、`V7_WRAP` 接入（属 C4）。
+> **完整开关表、实测矩阵、按场景配方** → **[`docs/USAGE.md`](docs/USAGE.md)**
 
 ### 自己构建各 shell 的 C 层补丁
 
 | 线 | 构建指南 |
 |---|---|
+| **★ 使用指南（先读这个）** | **[`docs/USAGE.md`](docs/USAGE.md)** —— 敲哪条命令 / 能开哪些功能 / 注意什么 |
 | **bash 线**（环境要求 / 三步构建 / 验证 / 排障） | [`docs/BUILD.md`](docs/BUILD.md) |
 | **mksh 线**（源码获取 / 锚点插桩 / 编译 / 验证 / 自包含性检查） | [`docs/BUILD_MKSH.md`](docs/BUILD_MKSH.md) |
 | 各解释器插桩点怎么挂、两条线的能力对照 | [`docs/BUILD_PER_SHELL.md`](docs/BUILD_PER_SHELL.md) |
@@ -266,6 +273,7 @@ ShellVMP/
 ├── examples/                           # 示例脚本
 ├── tests/                              # 回归测试
 └── docs/                               # 文档
+    ├── USAGE.md                        # ★ 使用指南（构建/开关/注意事项）
     ├── JOURNEY.md                      # ★ v1→v6 心路历程
     ├── ARCHITECTURE.md                 # 架构与设计原理
     ├── THREAT_MODEL.md                 # 威胁模型与能力承诺
@@ -276,6 +284,7 @@ ShellVMP/
 
 | 想了解 | 读 |
 |---|---|
+| **★ 怎么用：构建、开关、注意事项** | **[`docs/USAGE.md`](docs/USAGE.md)** |
 | **这套东西是怎么一路试错做出来的** | **[`docs/JOURNEY.md`](docs/JOURNEY.md)** |
 | 两层架构怎么协作、密码学怎么设计 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | 到底防得住谁、防不住谁 | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) |
