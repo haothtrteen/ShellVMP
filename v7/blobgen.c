@@ -6,7 +6,12 @@
  *   blobgen enc <seed_hex_64> <in> <out_ct> <out_tag>  加密骨架 → 密文+标签
  *
  * 与 ELF 运行时共用 crypto_core.h —— 同一份代码，两侧公式零分叉可能
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL 
  */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

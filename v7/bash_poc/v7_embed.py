@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+# 本文件是 GNU bash 的衍生作品，许可证由上游强制继承（不可更改）。
+# 分发内含魔改 bash 的产物时必须提供对应完整源码。
 # -*- coding: utf-8 -*-
 """
 v7_embed.py —— 把 V6 骨架加密认证后「内嵌」进改版 bash 二进制尾部（blob v3）。

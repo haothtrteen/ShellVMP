@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+# AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL
 # V6 终版三件套加固 —— 端到端回归驱动
 # 覆盖：aes/builtin × junk/decoy 矩阵（输出逐字节比对）、数据块/指令批/
 #       骨架三类篡改拒绝（MAC/完整性/一层壳三道门各司其职）、passkey+AI_GUARD

@@ -17,7 +17,12 @@
  *   - 纯擦除挡不住多线程高频轮询（窗口 1-10ms 仍可能被撞上）
  *   - 断读层（v7_harden_memory）是对付高频轮询的唯一解
  *   - root + 内核模块下前两层均可绕，第三层（伪块/掺假）是最后的成本墙
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL 
  */
+
 #ifndef V7_WIPE_H
 #define V7_WIPE_H
 

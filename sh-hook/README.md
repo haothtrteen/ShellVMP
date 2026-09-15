@@ -150,4 +150,10 @@ G3 自动完成裁决：给候选插 `write(2, "[PROBE] ...")` 探针（零头�
 
 ## License
 
-MIT，见 [LICENSE](LICENSE)。
+**AGPLv3**（与主仓库一致）——见 [`LICENSE`](LICENSE)。
+本项目是 [ShellVMP](../README.md) 的子项目。
+
+> 商用需授权、可与版权人洽谈商业许可；免费开源使用则须遵守 AGPLv3 的开源义务。
+> 详见 [`LICENSE.COMMERCIAL`](../LICENSE.COMMERCIAL)。
+
+Copyright (C) 2026 haothtrteen <2557976190@qq.com>

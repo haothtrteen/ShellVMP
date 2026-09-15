@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+# AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL
 # V6 终版三件套加固回归样本：确定性输出（无 date/$RANDOM/$$/网络/stdin/cd/set -e）
 # 专门覆盖三条新绑定路径：
 #   rc 绑定 —— 多个块以非零返回码结尾（false/[ ]/((0))/command-not-found）

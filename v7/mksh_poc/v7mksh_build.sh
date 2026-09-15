@@ -1,4 +1,8 @@
 #!/bin/bash
+# SPDX-License-Identifier: MirOS
+# SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+# 本文件是 mksh 的衍生作品，许可证由上游强制继承（MirOS，宽松）。
+# 义务：保留版权与许可声明即可，不要求提供完整源码。
 # =============================================================================
 # v7mksh_build.sh —— TShell「mksh 魔改解释器线」一键构建（路线 C / C3）
 #

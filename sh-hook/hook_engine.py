@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+# AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL
 # -*- coding: utf-8 -*-
 """
 hook_engine.py —— sh-hook 之二：表驱动 C 源码插桩引擎（与解释器无关）

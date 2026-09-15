@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+# AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL
 # test_hook_discover.sh —— 保留字表自动发现器回归
 # ============================================================================
 # 验证 discover_tables.py 能自动找到三个解释器的保留字表。

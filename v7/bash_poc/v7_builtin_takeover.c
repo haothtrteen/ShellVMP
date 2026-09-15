@@ -24,7 +24,14 @@
  * fail-closed 原则（沿用 isa_hook.c）：
  *   无 L6 表 → 不接管任何 builtin，行为与原生 bash 完全一致。
  *   这保证了"裸 bash 跑普通脚本"和"产物跑业务脚本"两条路径互不干扰。
+ 
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * 本文件是 GNU bash 的衍生作品，许可证由上游强制继承（不可更改）。
+ *  * 分发内含魔改 bash 的产物时必须提供对应完整源码。
  */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

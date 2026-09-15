@@ -190,7 +190,7 @@ Flutter release 产物：
 
 > 完整调研见 [`SHELL_TARGETS.md`](SHELL_TARGETS.md)。
 
-**意外发现：ShellVMP 的目标平台是 Android，而 Android 的系统 shell 是 mksh，不是 dash。**
+**意外发现：Android（首选验证靶场）的系统 shell 是 mksh，不是 dash。**
 
 按 Android 官方 `shell_and_utilities/README.md`：**Android 4.0（ICS）起 `/system/bin/sh` 就是 mksh**（MirBSD Korn Shell），5.0 起 ash 已从树中移除。设备实测 `$KSH_VERSION` = `@(#)MIRBSD KSH R55`。
 

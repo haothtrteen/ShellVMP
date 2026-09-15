@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+# AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL
 # ============================================================================
 # _rn() PRNG 单独验证 —— 不经生成器、不解产物，直接测函数本身
 #

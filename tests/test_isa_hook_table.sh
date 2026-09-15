@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+# AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL
 # test_isa_hook_table.sh —— B0/B1 锚点表回归
 # ============================================================================
 # 验证「表驱动插桩」重构**没有改变 bash 侧行为**，且新接口自洽。

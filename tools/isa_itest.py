@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+# AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL
 # -*- coding: utf-8 -*-
 """
 isa_itest.py —— r16 四层随机化表【端到端集成测试】（Python 改写器 × C hook）

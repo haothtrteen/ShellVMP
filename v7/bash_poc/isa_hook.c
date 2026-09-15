@@ -26,7 +26,14 @@
  *     【r16 教训】y.tab.c 里另有 find_reserved_word 函数，形态酷似主路径
  *     实为旁路死代码（无调用者）——patch 它则 L3 全程不生效（单脚本
  *     "假成功"：stderr 里 alias not found 才是真相）。
+ 
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * 本文件是 GNU bash 的衍生作品，许可证由上游强制继承（不可更改）。
+ *  * 分发内含魔改 bash 的产物时必须提供对应完整源码。
  */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

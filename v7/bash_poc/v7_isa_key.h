@@ -6,7 +6,14 @@
  * 运行期由 v7_isa_master()（VMP 保护）现场重组后立即擦除栈副本。
  *
  * 换掉本文件 = 换密钥 = 既有表全部作废（解密失败 → ISA 静默空转）。
- * 与 v7_isa_syms.h 同属「一次编 bash 生成、之后固定」的配对产物。 */
+ * 与 v7_isa_syms.h 同属「一次编 bash 生成、之后固定」的配对产物。 
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * 本文件是 GNU bash 的衍生作品，许可证由上游强制继承（不可更改）。
+ *  * 分发内含魔改 bash 的产物时必须提供对应完整源码。
+ */
+
 #ifndef V7_ISA_KEY_H
 #define V7_ISA_KEY_H
 

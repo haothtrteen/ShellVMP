@@ -10,7 +10,11 @@
 
 ## 一、最重要的发现：Android 用的是 mksh，不是 dash
 
-**ShellVMP 的目标平台是 Android。而 Android 的系统 shell 不是 dash。**
+**ShellVMP 的首选验证靶场是 Android。而 Android 的系统 shell 不是 dash。**
+
+> 措辞说明：Android 是**验证成本最低**的靶场（环境熵检测好写、设备易得、
+> 用户群体与项目定位重合），**不是**项目的唯一或排他目标平台。以下结论均以
+> "在 Android 上验证"为前提；换平台时靶子集合需重新评估。
 
 `/system/bin/sh` 的真实身份（按 Android 官方 `shell_and_utilities/README.md` 与实测）：
 

@@ -14,7 +14,12 @@
  * 说明：seed 内嵌于 ELF（与 shc 同级可见），本层目标不是密钥保密，
  * 而是 (a) 明文不出现在 strings/grep 可见层 (b) 篡改即拒跑。
  * 真正的机密性由内层 V6 执行绑定密钥链承担 —— dump 到的只是密文骨架。
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL 
  */
+
 #ifndef CRYPTO_CORE_H
 #define CRYPTO_CORE_H
 

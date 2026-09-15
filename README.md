@@ -283,6 +283,7 @@ ShellVMP/
     ├── JOURNEY.md                      # ★ v1→v6 心路历程
     ├── ARCHITECTURE.md                 # 架构与设计原理
     ├── THREAT_MODEL.md                 # 威胁模型与能力承诺
+    ├── HISTORY/                        # 历版源码与实验归档（史料，不参与构建）
     └── ...
 ```
 
@@ -304,6 +305,7 @@ ShellVMP/
 | **踩过的坑（按症状索引）** | **[`docs/PITFALLS.md`](docs/PITFALLS.md)** |
 | VMP 对接与收益边界 | [`docs/VMP_NOTES.md`](docs/VMP_NOTES.md) |
 | 哪些开源、哪些保留、为什么 | [`docs/OPEN_SOURCE_SCOPE.md`](docs/OPEN_SOURCE_SCOPE.md) |
+| **历版源码与实验归档（史料）** | **[`docs/HISTORY/`](docs/HISTORY/README.md)** |
 | 路线图与已知限制 | [`docs/ROADMAP.md`](docs/ROADMAP.md) |
 
 ### 最值得读的三篇
@@ -399,9 +401,34 @@ V7-ISA 的 C 层补丁（bash 生产链已通；**mksh 线四层插桩 + 三件�
 
 ## License
 
-- **本项目自有代码**（V6 混淆器、V7 ELF 封装、ISA 工具链、文档）：[MIT](LICENSE)。
-- **V7-ISA 涉及的 bash 部分**（`v7/bash_poc/` 的补丁，以及产物内嵌的魔改 bash）：bash 是 **GPLv3+** 软件，**魔改并分发其二进制时，必须向接收方提供对应完整源码**（含补丁与构建脚本）。本仓库已包含全部所需内容——随产物附上仓库链接或源码包即满足义务；下游再分发同样承担此义务。
-- **V7-ISA 涉及的 mksh 部分**（`v7/mksh_poc/` 的补丁，以及产物内嵌的魔改 mksh）：mksh 采用 **MirOS 许可证**（源码头部原文：*"Provided that these terms and disclaimer and all copyright notices are retained or reproduced in an accompanying document, permission is granted to deal in this work without restriction…"*）。**再分发门槛比 GPL 低**：保留版权与许可声明即可，不要求提供完整源码。补丁与构建脚本同样随本仓库提供。
+**双重许可（dual licensing）——二选一，不必同时遵守两套。**
+
+| 路径 | 许可证 | 适用 | 代价 |
+|---|---|---|---|
+| **开源** | **[AGPLv3](LICENSE)** | 个人 / 内部使用 / 开源项目 / 学术 | **免费**，但分发或提供网络服务时须公开修改版全部源码 |
+| **商业** | **[LICENSE.COMMERCIAL](LICENSE.COMMERCIAL)** | 想**闭源商用**、想运营 SaaS 而不开源 | 需向版权人取得书面授权 |
+
+> **一句话**：只要你愿意**把修改版开源**，商用也是免费的；**不想开源又想商用**，才需要买授权。
+
+**版权人**：皓thirteen（GitHub: [@haothtrteen](https://github.com/haothtrteen)）· `2557976190@qq.com`
+商业授权洽谈请走邮件，标题以 `[ShellVMP 商业授权]` 开头。详见 **[`LICENSE.COMMERCIAL`](LICENSE.COMMERCIAL)**。
+
+### 无论走哪条路，你都必须保留署名
+
+**这是硬性要求**：任何形式的分发（开源或闭源、改过或没改过、源码或二进制），
+代码与产物中都必须保留**原始版权声明与许可证声明**。详见 `LICENSE` 第 4、5 条。
+
+### 第三方组件不受本许可约束（上游强制继承，版权人无权更改）
+
+| 目录 | 许可证 | 义务 |
+|---|---|---|
+| `v7/bash_poc/` | **GPLv3+** | 派生自 GNU bash。分发内嵌魔改 bash 的产物 → **必须向接收方提供对应完整源码**（含补丁与构建脚本）。**商业许可也无法豁免这一条**——那是 bash 的权利，不是我们的。 |
+| `v7/mksh_poc/` | **MirOS** | 派生自 mksh。义务较轻：保留版权与许可声明即可，**不要求提供完整源码**。 |
+| `sh-hook/` | AGPLv3 | 本项目子项目，与本仓库一致。 |
+
+> **想完全闭源分发产物？** 走 **mksh 线**（MirOS，无需开源）而非 bash 线。
+> 逐项算账见 **[`docs/OPEN_SOURCE_SCOPE.md`](docs/OPEN_SOURCE_SCOPE.md)**。
+
 - **如实披露建议**：产物内嵌的是魔改 bash——这解释了产物体积，也是逆向者的已知起点（解释器可被识别，攻击面见 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)）。向产物接收方说明这一点，与项目的"诚实边界"原则一致。
 
 **免责声明**：本项目是**防御性安全研究**。使用者应只在**自己拥有或被授权**的代码上使用。作者不对任何滥用行为负责。

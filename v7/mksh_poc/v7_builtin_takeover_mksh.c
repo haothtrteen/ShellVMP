@@ -32,6 +32,12 @@
  * ── fail-closed 原则（沿用 bash 版） ────────────────────────────────────
  *   无 L6 表 → 不接管任何 builtin，行为与原生 mksh 完全一致。
  *   保证"裸 mksh 跑普通脚本"与"产物跑业务脚本"两条路径互不干扰。
+ 
+ *
+ * SPDX-License-Identifier: MirOS
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * 本文件是 mksh 的衍生作品，许可证由上游强制继承（MirOS，宽松）。
+ *  * 义务：保留版权与许可声明即可，不要求提供完整源码。
  */
 
 #include <stdio.h>

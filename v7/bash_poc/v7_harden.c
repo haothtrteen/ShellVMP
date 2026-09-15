@@ -39,7 +39,14 @@
  * 某些容器/内核可能禁 seccomp（如 DEFAULT_SECCOMP 未开、或已在更严的
  * 沙箱内），此时降级即可 —— 宁可少一层保护，也不能让业务脚本跑不起来。
  * 失败细节仅在 V7_DIAG 构建下输出到 stderr。
+ 
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * 本文件是 GNU bash 的衍生作品，许可证由上游强制继承（不可更改）。
+ *  * 分发内含魔改 bash 的产物时必须提供对应完整源码。
  */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

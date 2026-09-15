@@ -21,7 +21,12 @@
  *   诊断版：构建时 -DV7_DIAG（默认不定义 = 生产模式，诊断代码与
  *           提示串全部编译期剔除，strings 零残留，运行时设 V7_DIAG
  *           环境变量也无任何效果）
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL 
  */
+
 #define _GNU_SOURCE
 
 /* 诱饵哨兵的 env 名（见 main() 中的说明）。默认沿用旧名保持行为兼容；

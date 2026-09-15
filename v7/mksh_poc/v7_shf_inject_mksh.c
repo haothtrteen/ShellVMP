@@ -36,6 +36,12 @@
  * ── fail-closed 原则 ────────────────────────────────────────────────────
  *   无 V7_SELF / 无内嵌 blob / 非目标路径 → 返回原 fd 语义（返回 -1 表示
  *   "别接管，走原生 binopen3"）。裸 mksh 跑普通脚本行为零变化。
+ 
+ *
+ * SPDX-License-Identifier: MirOS
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * 本文件是 mksh 的衍生作品，许可证由上游强制继承（MirOS，宽松）。
+ *  * 义务：保留版权与许可声明即可，不要求提供完整源码。
  */
 
 #include <stdio.h>

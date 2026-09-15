@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+# 本文件是 GNU bash 的衍生作品，许可证由上游强制继承（不可更改）。
+# 分发内含魔改 bash 的产物时必须提供对应完整源码。
 # -*- coding: utf-8 -*-
 """
 xtrace_kill.py —— 编译时移除 bash 的调试输出通道（B 线 r15「釜底抽薪」项）

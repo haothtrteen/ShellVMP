@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+# AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL
 # verify.sh —— 对拍 patched dash 与 bash 的 $RANDOM 是否逐比特一致
 # 用法： sh verify.sh /path/to/patched/dash
 D="${1:?用法: sh verify.sh <patched-dash>}"

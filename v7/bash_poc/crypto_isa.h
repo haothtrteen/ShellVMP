@@ -14,7 +14,14 @@
  * 说明：seed 内嵌于 ELF（与 shc 同级可见），本层目标不是密钥保密，
  * 而是 (a) 明文不出现在 strings/grep 可见层 (b) 篡改即拒跑。
  * 真正的机密性由内层 V6 执行绑定密钥链承担 —— dump 到的只是密文骨架。
+ 
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * 本文件是 GNU bash 的衍生作品，许可证由上游强制继承（不可更改）。
+ *  * 分发内含魔改 bash 的产物时必须提供对应完整源码。
  */
+
 #ifndef CRYPTO_CORE_ISA_H
 #define CRYPTO_CORE_ISA_H
 

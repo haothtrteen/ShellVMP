@@ -17,6 +17,12 @@
  *   v7_scrypt_kdf / v7_keys / v7_keystream / v7_tag / v7_wb_decode
  * 注意：这些在 crypto_core.h 里是 static，必须先有引用才不会被 -O2 优化掉——
  * 下面的 v7c_* 非 static 入口正是为此存在（同时也是 zread.c 的调用点）。
+ 
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * 本文件是 GNU bash 的衍生作品，许可证由上游强制继承（不可更改）。
+ *  * 分发内含魔改 bash 的产物时必须提供对应完整源码。
  */
 
 #include <stdlib.h>   /* malloc / free（scrypt 的 V 数组需要堆内存） */

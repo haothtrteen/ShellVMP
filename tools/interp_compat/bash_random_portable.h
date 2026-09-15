@@ -19,7 +19,13 @@
  * 实测对拍（种子 1234 / 999999）：
  *   bash:    30658 14076 1273   /  19069 28971 24550
  *   本实现:  30658 14076 1273   /  19069 28971 24550   [一致]
- * ============================================================================ */
+ * ============================================================================
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+ * AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL 
+ */
+
 #ifndef BASH_RANDOM_PORTABLE_H
 #define BASH_RANDOM_PORTABLE_H
 

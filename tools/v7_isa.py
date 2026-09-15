@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 haothtrteen <2557976190@qq.com>
+# AGPLv3 双许可——闭源商用需另获授权，见 LICENSE.COMMERCIAL
 # -*- coding: utf-8 -*-
 """
 v7_isa.py —— r16 四层随机化表：生成器 + 第 1/2 层命令位置改写器 + 校验器
