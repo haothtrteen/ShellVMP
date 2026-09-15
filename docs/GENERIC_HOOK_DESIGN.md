@@ -350,17 +350,18 @@ ROLE_MAP = {
 
 ## 八、进展：规则 1/2/3 已实现并验证（2026-09）
 
-> **迁移注记（2026-09）**：发现器已与表驱动插桩引擎一起**抽出为独立子仓库
+> **迁移注记（2026-09）**：发现器已与表驱动插桩引擎一起**抽出为独立子项目
 > `sh-hook`**（「sh 通用 hook 点 —— 便捷快速移植不同 sh 解释器的特性」），
-> 位于本仓库同级目录 `../sh-hook/`。下文 `tools/hook_discover/` 路径已由
-> `../sh-hook/discover_tables.py` 取代；`tests/test_hook_discover.sh` 改为
-> 指向子仓库，缺仓库时 SKIP。引擎部分出自 `v7/bash_poc/isa_hook.py` 的
+> 现已**并入本仓库子目录 [`sh-hook/`](../sh-hook/README.md)**（git subtree，
+> 保留其全部提交历史）。下文 `tools/hook_discover/` 路径已由
+> `sh-hook/discover_tables.py` 取代；`tests/test_hook_discover.sh` 改为
+> 指向该子目录，缺目录时 SKIP。引擎部分出自 `v7/bash_poc/isa_hook.py` 的
 > B0 表驱动重构，bash/mksh 锚点集仍留存本仓库 `v7/bash_poc/anchors.py`。
 
-**已落地**：`../sh-hook/discover_tables.py` + `tests/test_hook_discover.sh`
+**已落地**：`sh-hook/discover_tables.py` + `tests/test_hook_discover.sh`
 
 ```sh
-python3 ../sh-hook/discover_tables.py \
+python3 sh-hook/discover_tables.py \
     <bash源码> <mksh源码> <dash源码>
 
 # 实测输出：
@@ -424,6 +425,6 @@ mksh `yylex`(lex.c:1046) 同样命中。**未命中 ≠ 死代码**：裁决依�
 *本文档基于 2026-09 实测。事实来源：`dash-0.5.12/src/parser.c`（`findkwd@1629`、
 `parsekwd`、`readtoken@700`）、`mksh-mksh-R59c/{lex.c:1046,syn.c:789/825}`、
 `bash-5.2/{y.tab.c:4501/5296/7714, print_cmd.c:1398}`。
-规则 1/2/3 的可运行实现见 `../sh-hook/`（`discover_tables.py` /
+规则 1/2/3 的可运行实现见 [`sh-hook/`](../sh-hook/README.md)（`discover_tables.py` /
 `discover_callers.py` / `probe_path.py`）。
 相关：[`C_LAYER_ROUTE_COMPARE.md`](C_LAYER_ROUTE_COMPARE.md)、[`PITFALLS.md`](PITFALLS.md) §5.1。*

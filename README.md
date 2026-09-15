@@ -270,6 +270,12 @@ ShellVMP/
 │   ├── vmp_apply.py                    # VMPacker 自动化对接（逐函数验证闭环）
 │   ├── vmp_targets.py                  # 无符号表产物里定位保护函数
 │   └── argv_leak_scan.py               # 参数泄漏扫描
+├── sh-hook/                            # ★ 子项目：sh 通用 hook 点（subtree 并入，见其 README）
+│   ├── discover_tables.py              # G1 保留字表自动发现
+│   ├── discover_callers.py             # G2 查表函数/调用点引用图谱
+│   ├── probe_path.py                   # G3 主路径探针裁决
+│   ├── hook_engine.py                  # 表驱动插桩引擎（定位→回滚→幂等→插入）
+│   └── docs/DESIGN.md                  # 设计浓缩版
 ├── examples/                           # 示例脚本
 ├── tests/                              # 回归测试
 └── docs/                               # 文档
@@ -294,6 +300,7 @@ ShellVMP/
 | 构建、测试、排障（bash 线） | [`docs/BUILD.md`](docs/BUILD.md) |
 | **构建 mksh 线（魔改解释器）** | **[`docs/BUILD_MKSH.md`](docs/BUILD_MKSH.md)** |
 | C 层补丁怎么挂到不同解释器 | [`docs/BUILD_PER_SHELL.md`](docs/BUILD_PER_SHELL.md) |
+| **sh 通用 hook 点（子项目：表发现 → 引用图谱 → 主路径探针）** | **[`sh-hook/README.md`](sh-hook/README.md)** |
 | **踩过的坑（按症状索引）** | **[`docs/PITFALLS.md`](docs/PITFALLS.md)** |
 | VMP 对接与收益边界 | [`docs/VMP_NOTES.md`](docs/VMP_NOTES.md) |
 | 哪些开源、哪些保留、为什么 | [`docs/OPEN_SOURCE_SCOPE.md`](docs/OPEN_SOURCE_SCOPE.md) |
@@ -339,7 +346,7 @@ ShellVMP/
 |---|---|
 | ① **源脚本是什么方言**（你拿什么进来保护） | bash ✅ 原生；POSIX / dash ✅ 子集直接收；mksh ⚠️ 接近（4 个构造 + 4 处语义分叉，清单见 [`docs/SHELL_TARGETS.md`](docs/SHELL_TARGETS.md)）；zsh ⚠️ 需语义审计降级（**数组 1-based**、word splitting 等，审计器制作中） |
 | ② **产物由谁执行**（目标环境靠哪个解释器跑） | **V7 线：产物自带内嵌静态 bash（`V7_SELF=1`）→ 不依赖目标环境装了什么 shell**，任何能跑 ELF 的 Linux / Android 都行。V6 线：靠环境的 shell，见下方实测矩阵 |
-| ③ **要不要 C 层插桩**（V7-ISA 魔改解释器） | 补丁已随本仓库分发、构建脚本齐全，**对使用者透明**。bash-5.2 生产链 ✅（[`BUILD.md`](docs/BUILD.md)）；**mksh-R59c 四层插桩 + 三件套 + L6 全通，已可打包**（[`BUILD_MKSH.md`](docs/BUILD_MKSH.md)）；其余冻结（自动发现工具链抽为子仓库 `sh-hook/`） |
+| ③ **要不要 C 层插桩**（V7-ISA 魔改解释器） | 补丁已随本仓库分发、构建脚本齐全，**对使用者透明**。bash-5.2 生产链 ✅（[`BUILD.md`](docs/BUILD.md)）；**mksh-R59c 四层插桩 + 三件套 + L6 全通，已可打包**（[`BUILD_MKSH.md`](docs/BUILD_MKSH.md)）；其余冻结（自动发现工具链见子项目 [`sh-hook/`](sh-hook/README.md)） |
 
 > **一句话**：如果你接受默认形态——产物**内嵌解释器分发**——那么 bash / POSIX / dash / mksh / zsh 来源的脚本（经收敛审计）都能保护，产物跑在**任何** Linux / Android 上，**目标环境装什么 shell 与你无关**。
 > 只有当你要求产物必须用目标环境的系统 shell 执行（例如 Android `/system/bin/mksh`，省去内嵌解释器的几 MB 体积）时，才需要关心下面这张矩阵。
@@ -378,9 +385,9 @@ V7-ISA 的 C 层补丁（bash 生产链已通；**mksh 线四层插桩 + 三件�
 不必逐个手写。可行性、三条自动识别规则、以及自动化**做不到**的边界，
 见 **[`docs/GENERIC_HOOK_DESIGN.md`](docs/GENERIC_HOOK_DESIGN.md)**。
 
-> 规则 1（保留字表自动发现）**已实现并验证** —— 已抽出为子仓库
-> `../sh-hook/`（「sh 通用 hook 点 —— 便捷快速移植不同 sh 解释器的特性」），
-> 其 `discover_tables.py` 能自动找出
+> 规则 1（保留字表自动发现）**已实现并验证** —— 见子项目
+> **[`sh-hook/`](sh-hook/README.md)**（「sh 通用 hook 点 —— 便捷快速移植不同 sh
+> 解释器的特性」），其 `discover_tables.py` 能自动找出
 > bash 的 `word_token_alist`、mksh 的 `tokentab`、dash 的 `parsekwd`。
 >
 > **定位说明（2026-09）**：主产品路线是**脚本侧收敛**（审计 + 降级到 bash 子集 +

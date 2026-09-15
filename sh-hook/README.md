@@ -131,12 +131,12 @@ G3 自动完成裁决：给候选插 `write(2, "[PROBE] ...")` 探针（零头�
 
 ## 出身与血统
 
-从 [ShellVMP](https://example.invalid/shellvmp)（v7/bash_poc）的插桩工作中
-抽出：
+从 **ShellVMP**（`v7/bash_poc`）的插桩工作中抽出，现作为其子项目
+（`git subtree` 并入主仓库 `sh-hook/`，保留独立提交历史）：
 
 - `hook_engine.py` ← `v7/bash_poc/isa_hook.py` 的 B0 表驱动重构（引擎部分）；
 - `discover_tables.py` ← ShellVMP `tools/hook_discover/`（已迁移至此）；
-- bash-5.2 全套生产锚点集与 mksh-R59c 试验性 L3 锚点集**留存于 ShellVMP 仓库**
+- bash-5.2 全套生产锚点集与 mksh-R59c 试验性 L3 锚点集**留存于 ShellVMP 主仓库**
   （`v7/bash_poc/anchors.py`），此处只含引擎与示例锚点集。
 
 ## 测试

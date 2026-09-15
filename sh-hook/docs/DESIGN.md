@@ -1,7 +1,7 @@
 # sh-hook 通用设计 —— 自动发现 hook 点 + 表驱动插桩
 
 > 本文档是浓缩版。完整论证（含 C 层移植路线对比、成本估算）见
-> ShellVMP 仓库 `docs/GENERIC_HOOK_DESIGN.md` 与 `docs/C_LAYER_ROUTE_COMPARE.md`。
+> 主仓库 ShellVMP 的 `docs/GENERIC_HOOK_DESIGN.md` 与 `docs/C_LAYER_ROUTE_COMPARE.md`。
 
 ## 1. 问题
 
@@ -188,7 +188,9 @@ LP64 下签名与 POSIX `write` 一致，无重声明冲突；任何 C 文件可
 
 - 2026-09：`discover_tables.py` 自 ShellVMP `tools/hook_discover/` 迁入本仓库；
   `hook_engine.py` 自 ShellVMP `v7/bash_poc/isa_hook.py` 的 B0 表驱动重构抽出。
-  ShellVMP 侧测试 `tests/test_hook_discover.sh` 改为指向兄弟仓库 `../sh-hook/`，
-  缺仓库时 SKIP。
+  ShellVMP 侧测试 `tests/test_hook_discover.sh` 指向本仓库，缺目录时 SKIP。
 - 2026-09：`discover_callers.py`（G2）与 `probe_path.py`（G3）在本仓库实现，
   fixture 回归 + 三壳真实树验证固化于 `tests/test_callers.sh`、`tests/test_probe.sh`。
+- 2026-09：本子项目由独立仓库改为**主仓库 ShellVMP 的子目录** `sh-hook/`
+  （`git subtree` 并入，独立提交历史保留）。此前文档中的兄弟路径
+  `../sh-hook/` 一律改为仓库内 `sh-hook/`。
