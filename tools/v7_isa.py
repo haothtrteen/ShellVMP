@@ -541,6 +541,14 @@ _WORD_OPS = ";|&()"          # 触发"下一个词是命令位"的操作符（�
 _CMD_KEYWORDS_AFTER = {"then", "do", "else"}   # 这些关键字后的词是命令位
 _FOR_HEAD_SKIP = False        # for 头部（for VAR in ...）内不改写——用状态跟踪
 
+# r33e：`local` 的**声明语境**保护 —— 见 _local_decl_guard。
+#   `local` 是声明关键字而非普通命令：它把"声明语境"传递给紧随其后的词。
+#   其中**数组赋值**（`local arr=(a b)`）的 `(` 只在紧跟 local/declare/typeset
+#   时才被 bash 当数组构造；local 一旦被换名，`arr=(...)` 就是语法错误
+#   （实测：`alias arr=("x")` → syntax error near unexpected token '('）。
+#   因此 local 后若跟数组赋值，**整条声明不参与改写**（local 与数组词都保留）。
+_DECL_KEYWORDS = {"local", "declare", "typeset"}
+
 
 def _is_ident(s):
     return bool(s) and (s[0] == "_" or s[0].isalpha()) and \
@@ -578,6 +586,40 @@ def build_rewrite_map(table, layers):
         if layer in layers and orig not in amap:
             amap[orig] = a
     return amap
+
+
+def _local_decl_guard(text, i, j, word, next_word):
+    """r33e：判断命令位的 `word`（声明关键字）后是否跟着**数组赋值**。
+
+    返回 True ⇒ 调用方必须**跳过**本词的改写（保持原名）。
+
+    背景：`local` / `declare` / `typeset` 是**声明关键字**，它把声明语境传给
+    紧随其后的词。`local arr=(a b)` 的 `(` 之所以被 bash 认作数组构造，前提
+    正是"它紧跟在一个声明关键字之后"。关键字被换名后，`alias arr=(a b)` 里
+    的 `(` 就退化成普通字符 → `syntax error near unexpected token '('`。
+
+    实测（r33e）：`examples/demo_app.sh` 的 `local items=("alpha" ...)` 在
+    **任意 seed** 下必炸——这是与改写映射无关的独立缺陷（此前无任何测试用例
+    用 `local var=(...)`，故长期潜伏）。
+
+    判定策略：**宁可漏改，不可误改**。只要下一个词形如 `NAME=(`，就整条声明
+    放弃改写（local 保留原名，数组词也保留原样）。数组赋值在 shell 脚本中
+    占比不高，放弃这点混淆强度换取语法正确性是划算的。
+    """
+    if word not in _DECL_KEYWORDS:
+        return False
+    nw = next_word
+    if not nw or nw.startswith("-"):        # `local -a arr`：选项形式，另处理
+        return False
+    # 形如 NAME=(...) / NAME+=(...) → 数组赋值，必须保护
+    if "=" not in nw:
+        return False
+    _lhs, _rhs = nw.split("=", 1)
+    if _lhs.endswith("+"):
+        _lhs = _lhs[:-1]
+    if not _is_ident(_lhs):
+        return False
+    return _rhs.startswith("(")
 
 
 def rewrite_l12(text, table):
@@ -796,6 +838,29 @@ def rewrite_l12(text, table):
         # （词内含 = 且合法变量名开头 → 赋值；此后下一词仍是命令位）
         m_word_is_assign = "=" in word and not word.startswith("=") and \
             _is_ident(word.split("=", 1)[0]) and word.split("=", 1)[1] != ""
+
+        # r33e：声明关键字 + 数组赋值 → 原样保留（否则 `local a=(...)` 的
+        # 数组构造语法失效）。
+        # 注意：`(` 属 _WORD_OPS，词扫描必然停在 `items=` 的 '=' 后、把
+        # '(' 切在下个 token——所以 lookahead 必须**多带 1 个字符**，否则
+        # 看不到紧跟的 '('，守卫永远不触发（本修复首版就踩了这一步）。
+        if is_cmd_pos_here(word) and word in alias_map and \
+                word in _DECL_KEYWORDS:
+            k = j
+            while k < n and text[k] in " \t":
+                k += 1
+            m = k
+            while m < n and text[m] not in " \t\n" and text[m] not in _WORD_OPS \
+                    and text[m] not in "\"'#" and not text.startswith("<<", m) \
+                    and not text.startswith("$((", m) \
+                    and not (text.startswith("((", m) or text.startswith("[[", m)):
+                m += 1
+            if _local_decl_guard(text, i, j, word, text[k:m + 1]):
+                out.append(word)          # 原名保留，不计数、不改写
+                skipped += 1
+                advance(word)
+                i = j
+                continue
 
         if is_cmd_pos_here(word) and not m_word_is_assign and word in alias_map:
             out.append(alias_map[word])
@@ -1408,9 +1473,52 @@ def _is_assignment_rhs(text, quote_pos):
     j = quote_pos - 1
     while j >= 0 and text[j] in " \t":
         j -= 1
+    # r33f 血案（实测抓到）：**数组构造** `NAME=(...)`。
+    #   `local items=("alpha" "beta" "gamma")` 的第 1 个引号左边是 '('，
+    #   第 2/3 个引号左边是空格再往前是上一个 '"'——两种形态都过不了
+    #   "左边必须是 '='" 的判据 ⇒ 数组元素被当普通静态字符串令牌化。
+    #   后果：数组元素在展开处（`"${items[@]}"` / `"$item"`）无法整段
+    #   strcmp 还原 → **输出令牌原文**（静默语义破坏，比崩更难发现）。
+    #   修法：向左跳过一层"数组构造"（可选 `+`、`(`、以及同为字符串
+    #   字面量的前序兄弟元素），让它落回 '=' 上。
+    #   安全性：`(cmd "str")` 子 shell 里落点不是 '='，自然 False。
+    if j >= 0 and (text[j] == "(" or text[j] == '"'):
+        k = j
+        # 依次向左跳过 兄弟字符串 / 空白 / '(' ，直到落回 '=' 或断。
+        #   ⚠️ 不要顺手跳 '+'：`arr+=(...)` 的 '+' 在 '=' **左侧**，
+        #   若连它一起跳就会越过 '=' 继续左行，落点变成变量名从而误判
+        #   （本修复第一版就踩了）。'+' 只可能出现在 '=' 左边，交给
+        #   下方的 "text[j-1] 排除集" 判定即可（该集不含 '+'）。
+        #
+        #   r33f.1：兄弟元素回扫必须**自右向左整体配对**，不能只看"左边
+        #   紧邻是不是引号"。原因：`items=("a" "b" "c")` 里 `"b"` 的**开**
+        #   引号左边是空格再往左是 `"a"` 的**闭**引号 —— 逐字符回扫时若
+        #   把它当"兄弟的开引号"直接跳过，会越过 `"a"` 的内容继续左行，
+        #   落点漂到 `(` 甚至更左，判定结果依赖相邻元素的奇偶巧合，脆。
+        #   正确做法：遇到 `"` 时按 shell 词法把它当作**前一个字符串的闭
+        #   引号**，向左找到与之配对的**开**引号后整体跨过。
+        while k >= 0:
+            c = text[k]
+            if c in " \t":
+                k -= 1
+                continue
+            if c == '"':                       # 前一个兄弟元素的**闭**引号
+                k -= 1
+                while k >= 0 and text[k] != '"':
+                    k -= 1                     # 左行找配对的开引号
+                k -= 1                         # 跨过开引号
+                continue
+            if c == "(":
+                k -= 1
+                continue
+            break
+        if k >= 0 and text[k] == "=":
+            j = k
     if j < 0 or text[j] != "=":
         return False
     # 排除 == / != / <= / >= 等比较运算符
+    #   ⚠️ 注意 '+' 不在排除集里 —— `NAME+=...` / `NAME+=(...)` 是**赋值**
+    #   （累加），不是比较。早期把 '+' 一并排除导致累加数组被误令牌化。
     if j + 1 < len(text) and text[j+1] == "=":
         return False
     if j > 0 and text[j-1] in "=!<>":
@@ -1436,6 +1544,10 @@ def _is_assignment_rhs(text, quote_pos):
         name_end = k if k >= 0 else j
     else:
         name_end = j
+    # r33f：`NAME+=...` 的 '+'; 夹在变量名与 '=' 之间，须先剥掉再做名字扫描，
+    #   否则扫描起点落在 '+' 上，词法立刻中止 → name 为空 → 误判"非赋值"。
+    if name_end - 1 >= 0 and text[name_end - 1] == "+":
+        name_end -= 1
     # 从 name_end 往左扫变量名字符
     k = name_end - 1
     while k >= 0 and (text[k].isalnum() or text[k] == "_"):
