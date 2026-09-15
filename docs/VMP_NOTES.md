@@ -37,6 +37,14 @@
 
 ### 3.1 VMPacker 的实测结论
 
+> **VMPacker**：第三方开源 ARM64 ELF 虚拟机保护系统，**AGPL-3.0**（与本项目主许可相同，
+> 无冲突；闭源商用需向其作者获取商业授权）。
+> 项目地址：<https://github.com/LeoChen-CoreMind/VMPacker>
+>
+> **本仓库不包含 VMPacker 的源码或二进制**——`tools/vmp_apply.py` 通过 `subprocess`
+> 调用其 CLI（`--vmpacker /path/to/vmpacker` 由使用者指定路径），属于工具链依赖。
+> 许可边界说明见 [`OPEN_SOURCE_SCOPE.md`](OPEN_SOURCE_SCOPE.md) 第三节。
+
 | 项 | 结果 |
 |---|---|
 | 能解析我们的 anti-disassembly 产物吗 | ✅ 能（走 Program Header，不依赖 section header） |

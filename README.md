@@ -1,5 +1,7 @@
 # ShellVMP
 
+> **English**: [README.en.md](README.en.md) — the English overview. Full documentation is in Chinese (see [文档索引](#文档索引)).
+
 **把 shell 脚本变成自保护产物。** 两层独立可用的保护：
 
 - **V6** — 纯 shell 实现的脚本混淆器：分块加密 + 执行状态绑链 + 跳跃密钥链 + 批级自修改。零外部依赖（`aes` 模式需 openssl，`builtin` 模式纯 shell/awk）。

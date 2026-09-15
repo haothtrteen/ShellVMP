@@ -114,6 +114,30 @@ GPL 义务跟着"**链接进哪个二进制**"走——不看代码在谁的仓�
 >
 > 两件事独立，可以同时需要。
 
+### 外部工具依赖：VMPacker（AGPL-3.0）
+
+`tools/vmp_apply.py` 会把 V7 产物里的保护函数（crypto / 校验 / 反调试 / 解密）
+批量交给 [VMPacker](https://github.com/LeoChen-CoreMind/VMPacker) 虚拟化。
+
+> **这是工具链依赖，不是代码集成。** 调用方式是 `subprocess.run([vmpacker, ...])`
+> ——外部可执行文件，**本仓库不含其任何源码，也未做链接**。
+> 使用者需自行获取 VMPacker（脚本用 `--vmpacker /path/to/vmpacker` 指定路径）。
+
+| | 本项目的做法（调用 CLI） | 真正的"集成"（有传染风险） |
+|---|---|---|
+| 形式 | `subprocess` 调外部二进制 | import / 链接其 `pkg/` 库 |
+| 仓库内 | 无其源码，无二进制 | 有其源码，编进产物 |
+| copyleft 传导 | **不传导** | 会传导到整个程序 |
+
+**许可证相容性**：VMPacker 采用 **AGPL-3.0**，与本项目主许可**完全相同**，无冲突。
+它同样提供商业授权路径（闭源商用需向其作者获取），与本项目的双许可模式一致。
+
+> **若产物中已注入其 VM 解释器 stub**，则该产物含 AGPL 组件——但这不改变产物的
+> 使用自由：AGPL 不限制"保护输出"的使用（同 Hikari 的立场："obfuscated binary is
+> not restricted in any way"）。产物内的 bash 部分仍受 GPLv3 约束。
+
+详见 [`VMP_NOTES.md`](VMP_NOTES.md)。
+
 ---
 
 ## 四、如果你要用在商业项目
