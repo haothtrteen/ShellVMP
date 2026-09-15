@@ -29,7 +29,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 #------------------------------------------------------------------------------
-# 工具函数：字符串编码与动态执行
+# 工具函数：字符串编码【生成代码字符串】，不是当场执行！
 #------------------------------------------------------------------------------
 
 # 将字符串转换为十六进制表示
@@ -38,37 +38,45 @@ str_to_hex() {
     printf '%s' "$str" | od -An -tx1 | tr ' ' '\\x'
 }
 
-# 使用printf "\\x.." 执行命令（基础混淆）
-exec_hex_encoded() {
-    local cmd_hex=$(str_to_hex "$1")
-    $(printf "$cmd_hex")
-}
-
-# Base64编码执行（中高级混淆）
-exec_base64_encoded() {
+# 生成hex执行代码片段（基础混淆，返回字符串，不执行）
+gen_hex_code() {
     local cmd="$1"
-    echo "$cmd" | base64 -w0 | { read encoded; echo "$encoded" | base64 -d | bash; }
+    local hex_str=$(str_to_hex "$cmd")
+    cat <<EOF
+{
+    local h="${hex_str}"
+    printf "\$h" | bash
+}
+EOF
 }
 
-# 环境变量拼接执行
-exec_via_env_concat() {
-    local part1="${1:0:2}"
-    local part2="${1:2}"
-    local arg="$2"
-    export CMD_PART_A="$part1"
-    export CMD_PART_B="$part2"
-    $CMD_PART_A$CMD_PART_B "$arg"
-}
-
-# 大括号扩展执行（仅适用于特定命令）
-exec_brace_expand() {
+# 生成Base64执行代码片段（中高级混淆，返回字符串）
+gen_base64_code() {
     local cmd="$1"
-    local arg="$2"
-    ${s,u,d,o} "${l}" # 示例：sudo -l，需根据实际命令调整
+    local b64=$(echo -n "$cmd" | base64 -w0)
+    cat <<EOF
+{
+    echo '${b64}' | base64 -d | bash
+}
+EOF
+}
+
+# 环境变量拼接执行代码片段
+gen_env_concat_code() {
+    local full_cmd="$1"
+    local part1="${full_cmd:0:2}"
+    local part2="${full_cmd:2}"
+    cat <<EOF
+{
+    export CMD_PART_A="${part1}"
+    export CMD_PART_B="${part2}"
+    \$CMD_PART_A\$CMD_PART_B
+}
+EOF
 }
 
 #------------------------------------------------------------------------------
-# 控制流重写与无用跳转插入
+# 控制流重写与无用跳转插入【生成代码字符串】
 #------------------------------------------------------------------------------
 
 # 插入虚假条件分支（恒真/恒假）
@@ -117,14 +125,8 @@ kill -USR1 $$ 2>/dev/null || true
 EOF
 }
 
-# 启用调试输出造成视觉噪声
-enable_debug_noise() {
-    set -x
-    # 此处后续命令将被追踪，增加阅读难度
-}
-
 #------------------------------------------------------------------------------
-# 函数拆分与重组模拟
+# 函数拆分与重组模拟【生成代码字符串】
 #------------------------------------------------------------------------------
 
 # 模拟函数拆分：将核心逻辑片段化并延迟加载
@@ -132,13 +134,16 @@ simulate_function_splitting() {
     local script_name="$1"
     local core_func_file="$WORK_DIR/core_logic.sh"
 
-    # 提取原始脚本的核心功能（简化版：假设内容为待混淆主体）
+    # 提取原始脚本的核心功能（简化版：待嵌入主体）
     cat > "$core_func_file" << 'EOF_CORE'
 _core_main_logic() {
 $(printf "\\x65\\x63\\x68\\x6f") "Obfuscated Script Execution Started."
-# 用户原始脚本内容将在此处被插入并进一步处理
+# ORIGIN_CODE_PLACEHOLDER
 }
 EOF_CORE
+
+    local core_content
+    core_content=$(< "$core_func_file")
 
     # 生成加载代码
     cat << EOF
@@ -153,42 +158,44 @@ export CORE_LOGIC_LOADED=1
 
 # 写入核心逻辑到临时文件（模拟source）
 cat > "\$__CORE_FILE" << 'INNER_EOF'
-$(cat "$core_func_file")
+$core_content
 INNER_EOF
 
-# 来源并执行（模拟函数拆分重组）
-source "\$__CORE_FILE" 2>/dev/null && _core_main_logic "$@"
+# source并执行
+source "\$__CORE_FILE" 2>/dev/null && _core_main_logic "\$@"
 rm -f "\$__CORE_FILE"
 # --- 模拟模块化加载结束 ---
 EOF
 }
 
 #------------------------------------------------------------------------------
-# 轻量级虚拟机指令模拟 (Pseudo-VM)
+# 轻量级虚拟机指令模拟 (Pseudo-VM)【修复动态数组语法】
 #------------------------------------------------------------------------------
 
-# 编译原始命令为伪字节码数组
+# 编译原始命令为伪字节码数组，生成VM代码字符串
 compile_to_pseudo_vm_bytecode() {
     local raw_cmd="$1"
-    local encoded_cmd=$(echo "$raw_cmd" | base64 -w0)
+    local encoded_cmd=$(echo -n "$raw_cmd" | base64 -w0)
     local opcode="EXEC_BASH_BASE64"
-    local bytecode_var="__VM_CODE_$(tr -dc A-Za-z </dev/urandom | head -c 8)"
+    local rand_name=$(tr -dc A-Za-z </dev/urandom | head -c 8)
+    local bytecode_var="__VM_CODE_${rand_name}"
 
     cat << EOF
 # --- 轻量级伪虚拟机开始 ---
-declare -a $bytecode_var
+declare -a ${bytecode_var}
 ${bytecode_var}[0]="$opcode"
 ${bytecode_var}[1]="$encoded_cmd"
 
 # 虚拟机解释器
 _interpret_vm_bytecode() {
     local pc=0
-    local max_pc=\${#$bytecode_var[@]}
+    local -n ref_arr=${bytecode_var}
+    local max_pc=\${#ref_arr[@]}
     while [ \$pc -lt \$max_pc ]; do
-        case "\${$bytecode_var[\$pc]}" in
+        case "\${ref_arr[\$pc]}" in
             "EXEC_BASH_BASE64")
                 ((pc++))
-                echo "\${$bytecode_var[\$pc]}" | base64 -d | bash
+                echo "\${ref_arr[\$pc]}" | base64 -d | bash
                 ;;
             *)
                 echo "Unknown opcode at PC=\$pc" >&2
@@ -201,6 +208,7 @@ _interpret_vm_bytecode() {
 
 # 执行虚拟机
 _interpret_vm_bytecode
+unset -n ref_arr
 # --- 轻量级伪虚拟机结束 ---
 EOF
 }
@@ -224,7 +232,7 @@ obfuscate_script() {
 
     # 开始构建混淆后脚本
     {
-        # Shebang保留或重写
+        # Shebang保留
         echo "#!/usr/bin/env bash"
         echo ""
         echo "# 混淆生成于 $(date '+%Y-%m-%d %H:%M:%S')"
@@ -236,11 +244,10 @@ obfuscate_script() {
             1)
                 # 基础混淆：仅命令编码
                 echo "$(printf "\\x23\\x20\\x42\\x61\\x73\\x69\\x63\\x20\\x6F\\x62\\x66\\x75\\x73\\x63\\x61\\x74\\x69\\x6F\\x6E\\x20\\x6C\\x61\\x79\\x65\\x72")"
-                exec_hex_encoded "echo Starting obfuscated script..."
+                gen_hex_code "echo Starting obfuscated script..."
                 echo ""
                 echo "# --- 原始逻辑嵌入 ---"
-                # 简单编码原始内容
-                exec_base64_encoded "$script_content"
+                gen_base64_code "$script_content"
                 ;;
             2)
                 # 中级混淆：控制流+无用跳转+函数模拟
@@ -248,19 +255,13 @@ obfuscate_script() {
                 insert_useless_branches
                 install_useless_traps
                 echo ""
-                simulate_function_splitting "$(basename "$input_script")"
+                simulate_function_splitting "$(basename "$input_script")" | sed "s|# ORIGIN_CODE_PLACEHOLDER|${script_content}|g"
                 echo ""
-                echo "# --- 嵌入原始逻辑（Base64）---"
-                exec_base64_encoded "
-$(echo "$script_content" | sed 's/^/# /') # 注释化原内容以避免直接暴露
-"
                 ;;
             3)
                 # 高级混淆：伪VM + 多层编码
                 echo "$(printf "\\x23\\x20\\x41\\x64\\x76\\x61\\x6E\\x63\\x65\\x64\\x20\\x6F\\x62\\x66\\x75\\x73\\x63\\x61\\x74\\x69\\x6F\\x6E\\x20\\x6C\\x61\\x79\\x65\\x72\\x20\\x28\\x50\\x73\\x65\\x75\\x64\\x6F\\x2D\\x56\\x4D\\x29")"
-                # 包含多层混淆
                 compile_to_pseudo_vm_bytecode "$script_content"
-                # 可加入更多层...
                 ;;
             *)
                 echo "未知混淆级别: $OBFUSCATION_LEVEL" >&2
@@ -282,13 +283,13 @@ $(echo "$script_content" | sed 's/^/# /') # 注释化原内容以避免直接暴
 main() {
     if [[ $# -lt 1 ]]; then
         echo "用法: $0 <input_script.sh> [output_script.sh]"
-        echo "选项:"
-        echo "  OBFUSCATION_LEVEL=1|2|3  设置混淆级别 (默认: 2)"
+        echo "环境变量选项:"
+        echo "  OBFUSCATION_LEVEL=1|2|3  设置混淆级别 (默认: 3)"
         return 1
     fi
 
     local input_file="$1"
-    local output_file="${2:-$(basename "${input_file%.sh}")_obfuscated.sh"}"
+    local output_file="${2:-$(basename "${input_file%.sh}")_obfuscated.sh}"
 
     obfuscate_script "$input_file" "$output_file"
     return $?
