@@ -74,7 +74,7 @@
 ### 最小用法：V6 混淆
 
 ```bash
-git clone https://github.com/<you>/ShellVMP.git
+git clone https://github.com/haothtrteen/ShellVMP.git
 cd ShellVMP
 
 # 混淆一个脚本
